@@ -1,0 +1,101 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum RoleScope {
+  GLOBAL
+  COMPANY
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  BLOCKED
+}
+
+enum CompanyStatus {
+  ACTIVE
+  INACTIVE
+}
+
+model User {
+  id           String      @id @default(uuid())
+  email        String      @unique
+  phone        String
+  passwordHash String      @map("password_hash")
+  nombre       String
+  status       UserStatus  @default(ACTIVE)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt      @map("updated_at")
+
+  // Relaciones
+  globalRoles   UserRole[]
+  companies     Company[]    @relation("CompanyOwner")
+  memberships   CompanyUser[]
+
+  @@map("users")
+}
+
+model Role {
+  id          String     @id @default(uuid())
+  name        String     @unique // SUPERADMIN, ADMIN, EMPLOYEE
+  scope       RoleScope
+  description String?
+
+  globalUsers UserRole[]
+  companyUsers CompanyUser[]
+
+  @@map("roles")
+}
+
+model UserRole {
+  userId String
+  roleId String
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+  @@map("user_roles")
+}
+
+model Company {
+  id          String        @id @default(uuid())
+  ownerUserId String        @map("owner_user_id")
+  name        String
+  phone       String?
+  email       String?
+  status      CompanyStatus @default(ACTIVE)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt      @map("updated_at")
+
+  owner User @relation("CompanyOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
+  users CompanyUser[]
+
+  @@map("companies")
+}
+
+model CompanyUser {
+  id        String   @id @default(uuid())
+  companyId String   @map("company_id")
+  userId    String   @map("user_id")
+  roleId    String   @map("role_id")
+  status    String   @default("ACTIVE") // simple string por ahora
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt      @map("updated_at")
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role    Role    @relation(fields: [roleId], references: [id], onDelete: Restrict)
+
+  @@unique([companyId, userId])
+  @@map("company_users")
+}
