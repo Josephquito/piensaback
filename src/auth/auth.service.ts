@@ -1,26 +1,54 @@
-import { Injectable } from '@nestjs/common';
-import { CreateAuthDto } from './dto/create-auth.dto';
-import { UpdateAuthDto } from './dto/update-auth.dto';
+import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { PrismaService } from '../../prisma/prisma.service';
+import * as bcrypt from 'bcrypt';
+import { JwtService } from '@nestjs/jwt';
 
 @Injectable()
 export class AuthService {
-  create(createAuthDto: CreateAuthDto) {
-    return 'This action adds a new auth';
+  constructor(
+    private prisma: PrismaService,
+    private jwt: JwtService,
+  ) {}
+
+  async validateUser(email: string, password: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { email },
+      include: {
+        globalRoles: {
+          include: { role: true },
+        },
+      },
+    });
+
+    if (!user) throw new UnauthorizedException('Credenciales inválidas');
+
+    const ok = await bcrypt.compare(password, user.passwordHash);
+    if (!ok) throw new UnauthorizedException('Credenciales inválidas');
+
+    const isSuperadmin = user.globalRoles.some(
+      (r) => r.role.name === 'SUPERADMIN',
+    );
+
+    return {
+      id: user.id,
+      email: user.email,
+      nombre: user.nombre,
+      isSuperadmin,
+    };
   }
 
-  findAll() {
-    return `This action returns all auth`;
-  }
+  async login(email: string, password: string) {
+    const user = await this.validateUser(email, password);
 
-  findOne(id: number) {
-    return `This action returns a #${id} auth`;
-  }
+    const payload = {
+      sub: user.id,
+      email: user.email,
+      isSuperadmin: user.isSuperadmin,
+    };
 
-  update(id: number, updateAuthDto: UpdateAuthDto) {
-    return `This action updates a #${id} auth`;
-  }
-
-  remove(id: number) {
-    return `This action removes a #${id} auth`;
+    return {
+      access_token: this.jwt.sign(payload),
+      user,
+    };
   }
 }
