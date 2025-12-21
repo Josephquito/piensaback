@@ -3,6 +3,15 @@ import { PrismaService } from '../../prisma/prisma.service';
 import * as bcrypt from 'bcrypt';
 import { JwtService } from '@nestjs/jwt';
 
+type RoleName = 'SUPERADMIN' | 'ADMIN' | 'EMPLOYEE';
+
+function pickHighestRole(roleNames: string[]): RoleName | null {
+  if (roleNames.includes('SUPERADMIN')) return 'SUPERADMIN';
+  if (roleNames.includes('ADMIN')) return 'ADMIN';
+  if (roleNames.includes('EMPLOYEE')) return 'EMPLOYEE';
+  return null;
+}
+
 @Injectable()
 export class AuthService {
   constructor(
@@ -25,15 +34,19 @@ export class AuthService {
     const ok = await bcrypt.compare(password, user.passwordHash);
     if (!ok) throw new UnauthorizedException('Credenciales inválidas');
 
-    const isSuperadmin = user.globalRoles.some(
-      (r) => r.role.name === 'SUPERADMIN',
-    );
+    const roleNames = user.globalRoles.map((r) => r.role.name);
+    const role = pickHighestRole(roleNames);
+
+    if (!role) {
+      throw new UnauthorizedException('Usuario sin rol asignado');
+    }
 
     return {
       id: user.id,
       email: user.email,
       nombre: user.nombre,
-      isSuperadmin,
+      role, // ✅ única fuente de verdad
+      roles: roleNames,
     };
   }
 
@@ -43,12 +56,11 @@ export class AuthService {
     const payload = {
       sub: user.id,
       email: user.email,
-      isSuperadmin: user.isSuperadmin,
+      role: user.role, // ✅
     };
 
     return {
       access_token: this.jwt.sign(payload),
-      user,
     };
   }
 }

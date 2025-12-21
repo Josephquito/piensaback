@@ -28,12 +28,12 @@ export class RolesController {
   }
 
   @Get(':id')
-  findOne(@Param('id') id: string) {
+  findOne(@Param('id') id: number) {
     return this.roles.findOne(id);
   }
 
   @Patch(':id')
-  update(@Param('id') id: string, @Body() dto: UpdateRoleDto) {
+  update(@Param('id') id: number, @Body() dto: UpdateRoleDto) {
     return this.roles.update(id, dto);
   }
 }

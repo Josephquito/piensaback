@@ -13,4 +13,7 @@ export class CreateUserDto {
 
   @IsString()
   phone: string;
+
+  @IsString()
+  role: 'SUPERADMIN' | 'ADMIN' | 'EMPLOYEE';
 }

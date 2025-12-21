@@ -32,13 +32,13 @@ export class RolesService {
     });
   }
 
-  async findOne(id: string) {
+  async findOne(id: number) {
     const role = await this.prisma.role.findUnique({ where: { id } });
     if (!role) throw new NotFoundException('Rol no encontrado.');
     return role;
   }
 
-  async update(id: string, dto: UpdateRoleDto) {
+  async update(id: number, dto: UpdateRoleDto) {
     const exists = await this.prisma.role.findUnique({ where: { id } });
     if (!exists) throw new NotFoundException('Rol no encontrado.');
 

@@ -9,12 +9,13 @@ CREATE TYPE "CompanyStatus" AS ENUM ('ACTIVE', 'INACTIVE');
 
 -- CreateTable
 CREATE TABLE "users" (
-    "id" TEXT NOT NULL,
+    "id" SERIAL NOT NULL,
     "email" TEXT NOT NULL,
     "phone" TEXT NOT NULL,
     "password_hash" TEXT NOT NULL,
     "nombre" TEXT NOT NULL,
     "status" "UserStatus" NOT NULL DEFAULT 'ACTIVE',
+    "created_by_user_id" INTEGER,
     "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updated_at" TIMESTAMP(3) NOT NULL,
 
@@ -23,7 +24,7 @@ CREATE TABLE "users" (
 
 -- CreateTable
 CREATE TABLE "roles" (
-    "id" TEXT NOT NULL,
+    "id" SERIAL NOT NULL,
     "name" TEXT NOT NULL,
     "scope" "RoleScope" NOT NULL,
     "description" TEXT,
@@ -33,19 +34,18 @@ CREATE TABLE "roles" (
 
 -- CreateTable
 CREATE TABLE "user_roles" (
-    "userId" TEXT NOT NULL,
-    "roleId" TEXT NOT NULL,
+    "userId" INTEGER NOT NULL,
+    "roleId" INTEGER NOT NULL,
 
     CONSTRAINT "user_roles_pkey" PRIMARY KEY ("userId","roleId")
 );
 
 -- CreateTable
 CREATE TABLE "companies" (
-    "id" TEXT NOT NULL,
-    "owner_user_id" TEXT NOT NULL,
+    "id" SERIAL NOT NULL,
+    "owner_user_id" INTEGER NOT NULL,
     "name" TEXT NOT NULL,
-    "phone" TEXT,
-    "email" TEXT,
+    "phone" TEXT NOT NULL,
     "status" "CompanyStatus" NOT NULL DEFAULT 'ACTIVE',
     "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updated_at" TIMESTAMP(3) NOT NULL,
@@ -55,10 +55,10 @@ CREATE TABLE "companies" (
 
 -- CreateTable
 CREATE TABLE "company_users" (
-    "id" TEXT NOT NULL,
-    "company_id" TEXT NOT NULL,
-    "user_id" TEXT NOT NULL,
-    "role_id" TEXT NOT NULL,
+    "id" SERIAL NOT NULL,
+    "company_id" INTEGER NOT NULL,
+    "user_id" INTEGER NOT NULL,
+    "role_id" INTEGER NOT NULL,
     "status" TEXT NOT NULL DEFAULT 'ACTIVE',
     "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updated_at" TIMESTAMP(3) NOT NULL,
@@ -74,6 +74,9 @@ CREATE UNIQUE INDEX "roles_name_key" ON "roles"("name");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "company_users_company_id_user_id_key" ON "company_users"("company_id", "user_id");
+
+-- AddForeignKey
+ALTER TABLE "users" ADD CONSTRAINT "users_created_by_user_id_fkey" FOREIGN KEY ("created_by_user_id") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "user_roles" ADD CONSTRAINT "user_roles_userId_fkey" FOREIGN KEY ("userId") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE;
