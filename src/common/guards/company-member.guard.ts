@@ -16,8 +16,11 @@ export class CompanyMemberGuard implements CanActivate {
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<RequestWithUser>();
 
+    // ✅ Si no es ruta multiempresa (no existe :companyId), NO aplica este guard
+    const companyIdParam = (request as any).params?.companyId;
+    if (!companyIdParam) return true;
+
     const user = request.user;
-    const companyIdParam = request.params.companyId;
 
     // 1️⃣ Usuario autenticado
     if (!user) {
@@ -25,7 +28,7 @@ export class CompanyMemberGuard implements CanActivate {
     }
 
     // 2️⃣ companyId válido en la ruta
-    if (!companyIdParam || isNaN(Number(companyIdParam))) {
+    if (isNaN(Number(companyIdParam))) {
       throw new ForbiddenException('CompanyId inválido o no proporcionado');
     }
 
@@ -48,10 +51,6 @@ export class CompanyMemberGuard implements CanActivate {
       throw new ForbiddenException('No tienes acceso a esta empresa');
     }
 
-    /**
-     * 4️⃣ (Opcional pero recomendado)
-     * Adjuntamos info de empresa al request para no volver a consultar
-     */
     (request as any).company = {
       id: companyId,
       roleName: membership.role.name,
