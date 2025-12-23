@@ -23,18 +23,38 @@ enum CompanyStatus {
   INACTIVE
 }
 
+/**
+ * Bloque 1 (por empresa): Suppliers, Customers, Products
+ * Product.type es dominio global (enum)
+ */
+enum ProductType {
+  PLATFORM
+  RECHARGE
+  OTHER
+}
+
+/**
+ * Permisos: acción CRUD
+ */
+enum PermissionAction {
+  CREATE
+  READ
+  UPDATE
+  DELETE
+}
+
 model User {
-  id           Int         @id @default(autoincrement())
-  email        String      @unique
+  id           Int        @id @default(autoincrement())
+  email        String     @unique
   phone        String
-  passwordHash String      @map("password_hash")
+  passwordHash String     @map("password_hash")
   nombre       String
-  status       UserStatus  @default(ACTIVE)
+  status       UserStatus @default(ACTIVE)
 
   // quién creó este usuario
-  createdByUserId Int?     @map("created_by_user_id")
-  createdBy       User?    @relation("UserCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
-  createdUsers    User[]   @relation("UserCreator")
+  createdByUserId Int?   @map("created_by_user_id")
+  createdBy       User?  @relation("UserCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  createdUsers    User[] @relation("UserCreator")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt      @map("updated_at")
@@ -42,6 +62,11 @@ model User {
   globalRoles UserRole[]
   companies   Company[]    @relation("CompanyOwner")
   memberships CompanyUser[]
+
+  // trazabilidad del bloque 1
+  createdSuppliers Supplier[] @relation("SupplierCreatedBy")
+  createdCustomers Customer[] @relation("CustomerCreatedBy")
+  createdProducts  Product[]  @relation("ProductCreatedBy")
 
   @@map("users")
 }
@@ -54,6 +79,9 @@ model Role {
 
   globalUsers  UserRole[]
   companyUsers CompanyUser[]
+
+  // NUEVO: permisos por rol
+  permissions RolePermission[]
 
   @@map("roles")
 }
@@ -70,8 +98,8 @@ model UserRole {
 }
 
 model Company {
-  id          Int          @id @default(autoincrement())
-  ownerUserId Int          @map("owner_user_id")
+  id          Int           @id @default(autoincrement())
+  ownerUserId Int           @map("owner_user_id")
   name        String
   phone       String
   status      CompanyStatus @default(ACTIVE)
@@ -82,15 +110,20 @@ model Company {
   owner User @relation("CompanyOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
   users CompanyUser[]
 
+  // relaciones del bloque 1
+  suppliers Supplier[]
+  customers Customer[]
+  products  Product[]
+
   @@map("companies")
 }
 
 model CompanyUser {
-  id        Int      @id @default(autoincrement())
-  companyId Int      @map("company_id")
-  userId    Int      @map("user_id")
-  roleId    Int      @map("role_id")
-  status    String   @default("ACTIVE")
+  id        Int    @id @default(autoincrement())
+  companyId Int    @map("company_id")
+  userId    Int    @map("user_id")
+  roleId    Int    @map("role_id")
+  status    String @default("ACTIVE")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt      @map("updated_at")
@@ -99,6 +132,117 @@ model CompanyUser {
   user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
   role    Role    @relation(fields: [roleId], references: [id], onDelete: Restrict)
 
+  // NUEVO: permisos específicos por usuario en esta empresa (overrides)
+  permissions CompanyUserPermission[]
+
   @@unique([companyId, userId])
   @@map("company_users")
+}
+
+// =======================
+// BLOQUE 1: SUPPLIERS
+// =======================
+model Supplier {
+  id        Int    @id @default(autoincrement())
+  companyId Int    @map("company_id")
+  name      String
+  contact   String
+  notes     String?
+
+  createdByUserId Int  @map("created_by_user_id")
+  createdBy       User @relation("SupplierCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt      @map("updated_at")
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, name])
+  @@map("suppliers")
+}
+
+// =======================
+// BLOQUE 1: CUSTOMERS
+// =======================
+model Customer {
+  id        Int    @id @default(autoincrement())
+  companyId Int    @map("company_id")
+  name      String
+  phone     String
+  notes     String?
+
+  createdByUserId Int  @map("created_by_user_id")
+  createdBy       User @relation("CustomerCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt      @map("updated_at")
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, phone])
+  @@map("customers")
+}
+
+// =======================
+// BLOQUE 1: PRODUCTS
+// =======================
+model Product {
+  id          Int         @id @default(autoincrement())
+  companyId   Int         @map("company_id")
+  type        ProductType
+  name        String
+  description String?
+  basePdv     Decimal?    @map("base_pdv") @db.Decimal(12, 2)
+
+  createdByUserId Int  @map("created_by_user_id")
+  createdBy       User @relation("ProductCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt      @map("updated_at")
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, type, name])
+  @@map("products")
+}
+
+// =======================
+// PERMISSIONS (RBAC + overrides)
+// =======================
+model Permission {
+  id       Int              @id @default(autoincrement())
+  resource String           // e.g. "SUPPLIERS", "CUSTOMERS", "PRODUCTS"
+  action   PermissionAction
+  key      String           @unique // e.g. "SUPPLIERS:CREATE"
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt      @map("updated_at")
+
+  roles       RolePermission[]
+  companyUsers CompanyUserPermission[]
+
+  @@unique([resource, action])
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       Int @map("role_id")
+  permissionId Int @map("permission_id")
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+model CompanyUserPermission {
+  companyUserId Int @map("company_user_id")
+  permissionId  Int @map("permission_id")
+
+  companyUser CompanyUser @relation(fields: [companyUserId], references: [id], onDelete: Cascade)
+  permission  Permission  @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([companyUserId, permissionId])
+  @@map("company_user_permissions")
 }

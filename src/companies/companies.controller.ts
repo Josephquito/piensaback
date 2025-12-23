@@ -12,7 +12,6 @@ import { CompaniesService } from './companies.service';
 import { CreateCompanyDto } from './dto/create-company.dto';
 import { AssignEmployeeDto } from './dto/assign-employee.dto';
 import express from 'express';
-
 @UseGuards(JwtAuthGuard)
 @Controller('companies')
 export class CompaniesController {
