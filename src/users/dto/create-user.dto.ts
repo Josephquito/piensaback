@@ -1,19 +1,27 @@
-import { IsEmail, IsOptional, IsString, MinLength } from 'class-validator';
+import { IsEmail, IsNotEmpty, IsString, MinLength } from 'class-validator';
 
 export class CreateUserDto {
   @IsEmail()
   email: string;
 
   @IsString()
-  @MinLength(6)
-  password: string;
-
-  @IsString()
-  nombre: string;
-
-  @IsString()
+  @IsNotEmpty()
   phone: string;
 
   @IsString()
-  role: 'SUPERADMIN' | 'ADMIN' | 'EMPLOYEE';
+  @IsNotEmpty()
+  nombre: string;
+
+  @IsString()
+  @MinLength(6)
+  password: string;
+
+  /**
+   * Puede ser:
+   * - "ADMIN" / "EMPLOYEE" (roles base)
+   * - "AYUDANTESUPERADMIN", "VENDEDOR", etc (roles custom)
+   */
+  @IsString()
+  @IsNotEmpty()
+  role: string;
 }

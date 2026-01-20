@@ -4,48 +4,62 @@ import {
   Delete,
   Get,
   Param,
+  ParseIntPipe,
   Patch,
   Post,
-  UseGuards,
   Req,
+  UseGuards,
 } from '@nestjs/common';
 import { UsersService } from './users.service';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
-import express from 'express';
 
-@UseGuards(JwtAuthGuard)
+type ReqUser = {
+  id: number;
+  email: string;
+  role: 'SUPERADMIN' | 'ADMIN' | 'EMPLOYEE';
+};
+
 @Controller('users')
+@UseGuards(JwtAuthGuard)
 export class UsersController {
-  constructor(private users: UsersService) {}
+  constructor(private readonly usersService: UsersService) {}
 
   @Post()
-  create(@Body() dto: CreateUserDto, @Req() req: express.Request) {
-    return this.users.create(dto, req.user as any);
+  create(@Body() dto: CreateUserDto, @Req() req: { user: ReqUser }) {
+    return this.usersService.create(dto, req.user);
   }
 
   @Get()
-  findAll(@Req() req: express.Request) {
-    return this.users.findAll(req.user as any);
+  findAll(@Req() req: { user: ReqUser }) {
+    return this.usersService.findAll(req.user);
+  }
+
+  @Get('me')
+  me(@Req() req: { user: ReqUser }) {
+    return this.usersService.findOne(req.user.id, req.user);
   }
 
   @Get(':id')
-  findOne(@Param('id') id: number, @Req() req: express.Request) {
-    return this.users.findOne(id, req.user as any);
+  findOne(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req: { user: ReqUser },
+  ) {
+    return this.usersService.findOne(id, req.user);
   }
 
   @Patch(':id')
   update(
-    @Param('id') id: number,
+    @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateUserDto,
-    @Req() req: express.Request,
+    @Req() req: { user: ReqUser },
   ) {
-    return this.users.update(id, dto, req.user as any);
+    return this.usersService.update(id, dto, req.user);
   }
 
   @Delete(':id')
-  remove(@Param('id') id: number, @Req() req: express.Request) {
-    return this.users.remove(id, req.user as any);
+  remove(@Param('id', ParseIntPipe) id: number, @Req() req: { user: ReqUser }) {
+    return this.usersService.remove(id, req.user);
   }
 }

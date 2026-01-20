@@ -43,6 +43,35 @@ enum PermissionAction {
   DELETE
 }
 
+// =======================
+// BLOQUE 2: CUENTAS + SLOTS + VENTA SLOT + INVENTARIO (SENCILLO)
+// =======================
+enum AccountStatus {
+  ACTIVE
+  INACTIVE
+  EXPIRED
+  BLOCKED
+}
+
+enum AccountSlotStatus {
+  AVAILABLE
+  SOLD
+  BLOCKED
+  DISABLED
+}
+
+enum SlotSaleStatus {
+  ACTIVE
+  ENDED
+  CANCELED
+}
+
+enum InventoryMovementType {
+  IN
+  OUT
+  ADJUST
+}
+
 model User {
   id           Int        @id @default(autoincrement())
   email        String     @unique
@@ -56,39 +85,60 @@ model User {
   createdBy       User?  @relation("UserCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
   createdUsers    User[] @relation("UserCreator")
 
+  cascadeInactivatedByUserId Int? @map("cascade_inactivated_by_user_id")
+  cascadeInactivatedBy       User? @relation("UserCascadeInactivator", fields: [cascadeInactivatedByUserId], references: [id], onDelete: SetNull)
+  cascadeInactivatedUsers    User[] @relation("UserCascadeInactivator")
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt      @map("updated_at")
 
+    // roles asignados al usuario (global)
   globalRoles UserRole[]
   companies   Company[]    @relation("CompanyOwner")
   memberships CompanyUser[]
+
+    // roles creados/propiedad del usuario (custom roles)
+    ownedRoles Role[] @relation("UserOwnedRoles")
 
   // trazabilidad del bloque 1
   createdSuppliers Supplier[] @relation("SupplierCreatedBy")
   createdCustomers Customer[] @relation("CustomerCreatedBy")
   createdProducts  Product[]  @relation("ProductCreatedBy")
 
+  // ===== BLOQUE 2 =====
+  createdAccounts     Account[]            @relation("AccountCreatedBy")
+  createdSlots        AccountSlot[]        @relation("SlotCreatedBy")
+  slotSales           SlotSale[]           @relation("SlotSoldBy")
+  inventoryMovements  InventoryMovement[]  @relation("InventoryMovementCreatedBy")
+
   @@map("users")
+  
 }
 
 model Role {
   id          Int       @id @default(autoincrement())
-  name        String    @unique // SUPERADMIN, ADMIN, EMPLOYEE
+  key         String    @unique
+
+  name        String
   scope       RoleScope
   description String?
 
+  // null = rol base del sistema
+  ownerUserId Int?      @map("owner_user_id")
+  owner       User?     @relation("UserOwnedRoles", fields: [ownerUserId], references: [id], onDelete: Cascade)
+
   globalUsers  UserRole[]
   companyUsers CompanyUser[]
+  permissions  RolePermission[]
 
-  // NUEVO: permisos por rol
-  permissions RolePermission[]
-
+  @@unique([ownerUserId, name])
   @@map("roles")
 }
 
+
 model UserRole {
-  userId Int
-  roleId Int
+  userId Int @map("user_id")
+  roleId Int @map("role_id")
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
   role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
@@ -114,6 +164,12 @@ model Company {
   suppliers Supplier[]
   customers Customer[]
   products  Product[]
+
+  // ===== BLOQUE 2 =====
+  accounts            Account[]
+  slotSales           SlotSale[]
+  inventoryMovements  InventoryMovement[]
+  inventoryBalances   ProductInventoryBalance[]
 
   @@map("companies")
 }
@@ -157,6 +213,9 @@ model Supplier {
 
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
 
+  // ===== BLOQUE 2 (opcional) =====
+  accounts Account[]
+
   @@unique([companyId, name])
   @@map("suppliers")
 }
@@ -178,6 +237,9 @@ model Customer {
   updatedAt DateTime @updatedAt      @map("updated_at")
 
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  // ===== BLOQUE 2 =====
+  slotSales SlotSale[]
 
   @@unique([companyId, phone])
   @@map("customers")
@@ -202,6 +264,12 @@ model Product {
 
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
 
+  // ===== BLOQUE 2 =====
+  accounts           Account[]
+  slotSales          SlotSale[]
+  inventoryMovements InventoryMovement[]
+  inventoryBalances  ProductInventoryBalance[]
+
   @@unique([companyId, type, name])
   @@map("products")
 }
@@ -218,7 +286,7 @@ model Permission {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt      @map("updated_at")
 
-  roles       RolePermission[]
+  roles        RolePermission[]
   companyUsers CompanyUserPermission[]
 
   @@unique([resource, action])
@@ -245,4 +313,163 @@ model CompanyUserPermission {
 
   @@id([companyUserId, permissionId])
   @@map("company_user_permissions")
+}
+
+// =======================
+// BLOQUE 2: ACCOUNTS (CUENTAS)
+// =======================
+model Account {
+  id         Int @id @default(autoincrement())
+  companyId  Int @map("company_id")
+  productId  Int @map("product_id") // Product.type = PLATFORM (NETFLIX, DISNEY, etc.)
+  supplierId Int? @map("supplier_id")
+
+  emailLogin    String @map("email_login")
+  passwordLogin String @map("password_login")
+
+  purchasedAt DateTime @map("purchased_at")
+  cutOffAt    DateTime @map("cut_off_at")
+
+  profilesCount     Int     @map("profiles_count")
+  purchaseTotalCost Decimal @map("purchase_total_cost") @db.Decimal(12, 2)
+
+  status AccountStatus @default(ACTIVE)
+
+  // quién registró/creó la cuenta
+  createdByUserId Int  @map("created_by_user_id")
+  createdBy       User @relation("AccountCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt      @map("updated_at")
+
+  company  Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  product  Product   @relation(fields: [productId], references: [id], onDelete: Restrict)
+  supplier Supplier? @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+
+  slots     AccountSlot[]
+  slotSales SlotSale[]
+
+  inventoryMovements InventoryMovement[] @relation("AccountInventoryMovements")
+
+  @@index([companyId, productId])
+  @@unique([companyId, productId, emailLogin])
+  @@map("accounts")
+}
+
+// =======================
+// BLOQUE 2: SLOTS (PERFILES)
+// =======================
+model AccountSlot {
+  id        Int @id @default(autoincrement())
+  accountId Int @map("account_id")
+
+  code   String // P1, P2, etc.
+  status AccountSlotStatus @default(AVAILABLE)
+
+  createdByUserId Int  @map("created_by_user_id")
+  createdBy       User @relation("SlotCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt      @map("updated_at")
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  sale SlotSale?
+
+  @@unique([accountId, code])
+  @@index([accountId, status])
+  @@map("account_slots")
+}
+
+// =======================
+// BLOQUE 2: VENTA DE SLOT (ASIGNACIÓN AL CLIENTE)
+// =======================
+model SlotSale {
+  id        Int @id @default(autoincrement())
+  companyId Int @map("company_id")
+
+  productId  Int @map("product_id")  // Product PLATFORM vendido
+  accountId  Int @map("account_id")
+  slotId     Int @unique @map("slot_id")
+  customerId Int @map("customer_id")
+
+  salePrice Decimal  @map("sale_price") @db.Decimal(12, 2)
+  soldAt    DateTime @map("sold_at")
+  cutOffAt  DateTime @map("cut_off_at")
+
+  // costo (promedio ponderado al momento de vender)
+  cogsCost Decimal @map("cogs_cost") @db.Decimal(12, 2)
+
+  status SlotSaleStatus @default(ACTIVE)
+
+  soldByUserId Int  @map("sold_by_user_id")
+  soldBy       User @relation("SlotSoldBy", fields: [soldByUserId], references: [id], onDelete: Restrict)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt      @map("updated_at")
+
+  company  Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  product  Product     @relation(fields: [productId], references: [id], onDelete: Restrict)
+  account  Account     @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  slot     AccountSlot @relation(fields: [slotId], references: [id], onDelete: Restrict)
+  customer Customer    @relation(fields: [customerId], references: [id], onDelete: Restrict)
+
+  // ✅ 1 venta -> N movimientos (OUT, ADJUST, etc.)
+  inventoryMovements InventoryMovement[]
+
+  @@index([companyId, productId, status])
+  @@index([companyId, customerId, status])
+  @@map("slot_sales")
+}
+
+model InventoryMovement {
+  id        Int @id @default(autoincrement())
+  companyId Int @map("company_id")
+  productId Int @map("product_id")
+
+  type InventoryMovementType
+  qty  Int
+
+  unitCost  Decimal @map("unit_cost") @db.Decimal(12, 4)
+  totalCost Decimal @map("total_cost") @db.Decimal(12, 2)
+
+  accountId  Int? @map("account_id")   // IN típicamente
+  slotSaleId Int? @map("slot_sale_id") // OUT típicamente
+
+  createdByUserId Int  @map("created_by_user_id")
+  createdBy       User @relation("InventoryMovementCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  account Account? @relation("AccountInventoryMovements", fields: [accountId], references: [id], onDelete: SetNull)
+
+  // ✅ relación normal (muchos movimientos pueden apuntar a la misma venta)
+  slotSale SlotSale? @relation(fields: [slotSaleId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, productId, createdAt])
+  @@index([accountId])
+  @@index([slotSaleId])
+  @@map("inventory_movements")
+}
+
+// =======================
+// BLOQUE 2: BALANCE (STOCK + PROMEDIO) POR EMPRESA Y PRODUCTO
+// =======================
+model ProductInventoryBalance {
+  companyId Int @map("company_id")
+  productId Int @map("product_id")
+
+  qtyOnHand Int @default(0) @map("qty_on_hand")
+  avgCost   Decimal @default(0) @map("avg_cost") @db.Decimal(12, 4)
+
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@id([companyId, productId])
+  @@map("product_inventory_balances")
 }

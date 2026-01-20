@@ -13,50 +13,87 @@ const prisma = new PrismaClient();
 async function main() {
   /**
    * ======================================================
-   * 1) ROLES
+   * 0) CONFIG SUPERADMIN INICIAL (cámbialo por env si quieres)
    * ======================================================
    */
-  await prisma.role.createMany({
-    data: [
-      {
-        name: 'SUPERADMIN',
-        scope: RoleScope.GLOBAL,
-        description: 'SaaS Super Admin',
-      },
-      {
-        name: 'ADMIN',
-        scope: RoleScope.COMPANY,
-        description: 'Administrador de empresa',
-      },
-      {
-        name: 'EMPLOYEE',
-        scope: RoleScope.COMPANY,
-        description: 'Empleado de empresa',
-      },
-    ],
-    skipDuplicates: true,
+  const email = 'josequito037@gmail.com';
+  const password = 'Ellayyo.123@';
+
+  /**
+   * ======================================================
+   * 1) ROLES BASE (ownerUserId = null)
+   * ======================================================
+   * Usamos upsert por key (único) para que no duplique jamás.
+   */
+  const superadminRole = await prisma.role.upsert({
+    where: { key: 'BASE:SUPERADMIN' },
+    update: {
+      name: 'SUPERADMIN',
+      scope: RoleScope.GLOBAL,
+      description: 'SaaS Super Admin (base)',
+      ownerUserId: null,
+    },
+    create: {
+      key: 'BASE:SUPERADMIN',
+      name: 'SUPERADMIN',
+      scope: RoleScope.GLOBAL,
+      description: 'SaaS Super Admin (base)',
+      ownerUserId: null,
+    },
+    select: { id: true, key: true, name: true },
   });
 
-  const superadminRole = await prisma.role.findUnique({
-    where: { name: 'SUPERADMIN' },
-  });
-  const adminRole = await prisma.role.findUnique({
-    where: { name: 'ADMIN' },
-  });
-  const employeeRole = await prisma.role.findUnique({
-    where: { name: 'EMPLOYEE' },
+  const adminRole = await prisma.role.upsert({
+    where: { key: 'BASE:ADMIN' },
+    update: {
+      name: 'ADMIN',
+      scope: RoleScope.GLOBAL,
+      description: 'Admin (base)',
+      ownerUserId: null,
+    },
+    create: {
+      key: 'BASE:ADMIN',
+      name: 'ADMIN',
+      scope: RoleScope.GLOBAL,
+      description: 'Admin (base)',
+      ownerUserId: null,
+    },
+    select: { id: true, key: true, name: true },
   });
 
-  if (!superadminRole || !adminRole || !employeeRole) {
-    throw new Error('Roles no encontrados');
-  }
+  const employeeRole = await prisma.role.upsert({
+    where: { key: 'BASE:EMPLOYEE' },
+    update: {
+      name: 'EMPLOYEE',
+      scope: RoleScope.GLOBAL,
+      description: 'Employee (base, no editable)',
+      ownerUserId: null,
+    },
+    create: {
+      key: 'BASE:EMPLOYEE',
+      name: 'EMPLOYEE',
+      scope: RoleScope.GLOBAL,
+      description: 'Employee (base, no editable)',
+      ownerUserId: null,
+    },
+    select: { id: true, key: true, name: true },
+  });
 
   /**
    * ======================================================
    * 2) PERMISOS (CATÁLOGO GLOBAL)
    * ======================================================
    */
-  const resources = ['SUPPLIERS', 'CUSTOMERS', 'PRODUCTS', 'MEMBERS'] as const;
+  const resources = [
+    'SUPPLIERS',
+    'CUSTOMERS',
+    'PRODUCTS',
+    'MEMBERS',
+    'ACCOUNTS',
+    'SLOTS',
+    'INVENTORY',
+  ] as const;
+
   const actions = [
     PermissionAction.CREATE,
     PermissionAction.READ,
@@ -82,13 +119,13 @@ async function main() {
 
   /**
    * ======================================================
-   * 3) ASIGNAR CRUD COMPLETO AL ROL ADMIN
+   * 3) ASIGNAR CRUD COMPLETO AL ROL BASE ADMIN (opcional)
    * ======================================================
+   * Si luego quieres que SOLO algunos recursos estén para ADMIN, ajusta aquí.
    */
   const adminPermissions = await prisma.permission.findMany({
-    where: {
-      resource: { in: resources as unknown as string[] },
-    },
+    where: { resource: { in: resources as unknown as string[] } },
+    select: { id: true, key: true },
   });
 
   for (const perm of adminPermissions) {
@@ -109,11 +146,9 @@ async function main() {
 
   /**
    * ======================================================
-   * 4) SUPERADMIN GLOBAL (USER + USER_ROLE)
+   * 4) SUPERADMIN INICIAL (USER + USER_ROLE)
    * ======================================================
    */
-  const email = 'josequito037@gmail.com';
-  const password = 'Ellayyo.123@';
   const passwordHash = await bcrypt.hash(password, 10);
 
   const superadmin = await prisma.user.upsert({
@@ -129,6 +164,7 @@ async function main() {
     select: { id: true, email: true },
   });
 
+  // asignar rol SUPERADMIN base al usuario
   await prisma.userRole.upsert({
     where: {
       userId_roleId: {
@@ -150,13 +186,13 @@ async function main() {
    */
   console.log('✅ Seed ejecutado correctamente');
   console.log('SUPERADMIN:', email, password);
-  console.log('Roles:', {
+  console.log('Roles base:', {
     SUPERADMIN: superadminRole.id,
     ADMIN: adminRole.id,
     EMPLOYEE: employeeRole.id,
   });
   console.log(
-    'Permisos ADMIN:',
+    'Permisos asignados a ADMIN:',
     adminPermissions.map((p) => p.key),
   );
 }

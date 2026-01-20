@@ -1,8 +1,9 @@
-import {
+/* import {
   Body,
   Controller,
   Get,
   Param,
+  ParseIntPipe,
   Post,
   Req,
   UseGuards,
@@ -29,7 +30,7 @@ export class CompaniesController {
 
   @Post(':companyId/employees')
   assignEmployee(
-    @Param('companyId') companyId: number,
+    @Param('companyId', ParseIntPipe) companyId: number,
     @Body() dto: AssignEmployeeDto,
     @Req() req: express.Request,
   ) {
@@ -44,3 +45,4 @@ export class CompaniesController {
     return this.companies.listCompanyEmployees(companyId, req.user as any);
   }
 }
+*/
