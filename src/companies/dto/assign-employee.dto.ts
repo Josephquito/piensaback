@@ -1,9 +1,11 @@
-import { IsInt, IsPositive } from 'class-validator';
-import { Type } from 'class-transformer';
+import { IsInt, Min } from 'class-validator';
 
-export class AssignEmployeeDto {
-  @Type(() => Number)
+export class AssignCompanyUserDto {
   @IsInt()
-  @IsPositive()
+  @Min(1)
   userId: number;
+
+  @IsInt()
+  @Min(1)
+  roleId: number; // Role (scope COMPANY normalmente)
 }
