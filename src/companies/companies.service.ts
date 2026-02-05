@@ -1,4 +1,4 @@
-/*  import {
+import {
   BadRequestException,
   ForbiddenException,
   Injectable,
@@ -6,148 +6,135 @@
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateCompanyDto } from './dto/create-company.dto';
-import { AssignEmployeeDto } from './dto/assign-employee.dto';
+import { UpdateCompanyDto } from './dto/update-company.dto';
+import {
+  BaseRole,
+  CompanyUserStatus,
+  UserStatus,
+  CompanyStatus,
+} from '@prisma/client';
 
-type RoleName = 'SUPERADMIN' | 'ADMIN' | 'EMPLOYEE';
+import { CurrentUserJwt } from '../common/types/current-user-jwt.type'; // ajusta ruta
 
 @Injectable()
 export class CompaniesService {
   constructor(private prisma: PrismaService) {}
 
-  async create(
-    dto: CreateCompanyDto,
-    currentUser: { id: number; role: RoleName },
-  ) {
-    if (currentUser.role !== 'ADMIN') {
-      throw new ForbiddenException('Solo los ADMIN pueden crear empresas.');
+  // =========================
+  // Helpers
+  // =========================
+  private assertAdmin(actor: CurrentUserJwt) {
+    if (actor.role !== BaseRole.ADMIN) {
+      throw new ForbiddenException('Solo ADMIN.');
+    }
+  }
+
+  private async assertOwner(actor: CurrentUserJwt, companyId: number) {
+    // SUPERADMIN nunca, EMPLOYEE nunca
+    if (actor.role !== BaseRole.ADMIN) {
+      throw new ForbiddenException('Solo el owner puede hacer esto.');
     }
 
-    if (!dto.name?.trim())
-      throw new BadRequestException('El nombre es requerido.');
-    if (!dto.phone?.trim())
-      throw new BadRequestException('El teléfono es requerido.');
+    const company = await this.prisma.company.findUnique({
+      where: { id: companyId },
+      select: { id: true, ownerUserId: true },
+    });
+
+    if (!company) throw new NotFoundException('Company no existe.');
+    if (company.ownerUserId !== actor.id) {
+      throw new ForbiddenException('No eres owner de esta company.');
+    }
+
+    return company;
+  }
+
+  // =========================
+  // CRUD
+  // =========================
+  async create(dto: CreateCompanyDto, actor: CurrentUserJwt) {
+    this.assertAdmin(actor);
 
     return this.prisma.company.create({
       data: {
-        ownerUserId: currentUser.id,
-        name: dto.name.trim(),
-        phone: dto.phone.trim(),
-        status: 'ACTIVE',
-      },
-      select: {
-        id: true,
-        name: true,
-        phone: true,
-        status: true,
-        ownerUserId: true,
-        createdAt: true,
+        name: dto.name,
+        phone: dto.phone,
+        ownerUserId: actor.id,
       },
     });
   }
 
-  async findMine(currentUser: { id: number; role: RoleName }) {
-    if (currentUser.role !== 'ADMIN') {
-      throw new ForbiddenException('Solo los ADMIN pueden ver sus empresas.');
+  async findAllVisible(actor: CurrentUserJwt) {
+    // SUPERADMIN no ve nada
+    if (actor.role === BaseRole.SUPERADMIN) return [];
+
+    // ADMIN ve sus companies
+    if (actor.role === BaseRole.ADMIN) {
+      return this.prisma.company.findMany({
+        where: { ownerUserId: actor.id },
+        orderBy: { createdAt: 'desc' },
+      });
     }
 
+    // EMPLOYEE: companies donde esté asignado (membership ACTIVE)
     return this.prisma.company.findMany({
-      where: { ownerUserId: currentUser.id },
-      select: {
-        id: true,
-        name: true,
-        phone: true,
-        status: true,
-        createdAt: true,
+      where: {
+        users: {
+          some: {
+            userId: actor.id,
+            status: 'ACTIVE',
+          },
+        },
       },
       orderBy: { createdAt: 'desc' },
     });
   }
 
-  async assignEmployee(
-    companyId: number,
-    dto: AssignEmployeeDto,
-    currentUser: { id: number; role: RoleName },
-  ) {
-    if (currentUser.role !== 'ADMIN') {
-      throw new ForbiddenException(
-        'Solo los ADMIN pueden asignar employees a empresas.',
-      );
+  async findOneVisible(companyId: number, actor: CurrentUserJwt) {
+    if (actor.role === BaseRole.SUPERADMIN) {
+      throw new NotFoundException('Company no visible.');
     }
 
-    // 1) empresa debe pertenecer al admin
-    const company = await this.prisma.company.findFirst({
-      where: { id: companyId, ownerUserId: currentUser.id },
-      select: { id: true },
-    });
-    if (!company)
-      throw new NotFoundException('Empresa no encontrada o no te pertenece.');
-
-    // 2) employee debe ser creado por este admin y tener rol global EMPLOYEE
-    const employee = await this.prisma.user.findFirst({
-      where: {
-        id: dto.userId,
-        createdByUserId: currentUser.id,
-        globalRoles: { some: { role: { name: 'EMPLOYEE' } } },
-      },
-      select: { id: true },
-    });
-    if (!employee) {
-      throw new ForbiddenException('Ese EMPLOYEE no te pertenece o no existe.');
-    }
-
-    // 3) roleId EMPLOYEE (para company_users)
-    const employeeRole = await this.prisma.role.findUnique({
-      where: { name: 'EMPLOYEE' },
-      select: { id: true },
-    });
-    if (!employeeRole)
-      throw new BadRequestException(
-        'No existe el rol EMPLOYEE en la tabla roles.',
-      );
-
-    // 4) crear vínculo
-    try {
-      return await this.prisma.companyUser.create({
-        data: {
-          companyId,
-          userId: employee.id,
-          roleId: employeeRole.id,
-          status: 'ACTIVE',
-        },
-        select: {
-          id: true,
-          companyId: true,
-          userId: true,
-          status: true,
-          createdAt: true,
-        },
+    if (actor.role === BaseRole.ADMIN) {
+      const company = await this.prisma.company.findFirst({
+        where: { id: companyId, ownerUserId: actor.id },
       });
-    } catch {
-      throw new BadRequestException(
-        'El usuario ya está asignado a esta empresa.',
-      );
+      if (!company) throw new NotFoundException('Company no visible.');
+      return company;
     }
+
+    // EMPLOYEE
+    const company = await this.prisma.company.findFirst({
+      where: {
+        id: companyId,
+        users: {
+          some: {
+            userId: actor.id,
+            status: CompanyUserStatus.ACTIVE,
+          },
+        },
+      },
+    });
+
+    if (!company) throw new NotFoundException('Company no visible.');
+    return company;
   }
 
-  async listCompanyEmployees(
-    companyId: number,
-    currentUser: { id: number; role: RoleName },
-  ) {
-    if (currentUser.role !== 'ADMIN') {
-      throw new ForbiddenException(
-        'Solo los ADMIN pueden ver employees por empresa.',
-      );
-    }
+  async remove(companyId: number, actor: CurrentUserJwt) {
+    await this.assertOwner(actor, companyId);
 
-    const company = await this.prisma.company.findFirst({
-      where: { id: companyId, ownerUserId: currentUser.id },
-      select: { id: true },
-    });
-    if (!company)
-      throw new NotFoundException('Empresa no encontrada o no te pertenece.');
+    await this.prisma.company.delete({ where: { id: companyId } });
+    return { ok: true };
+  }
+
+  // =========================
+  // MEMBERS (assign/unassign)
+  // =========================
+  async listMembers(companyId: number, actor: CurrentUserJwt) {
+    await this.assertOwner(actor, companyId);
 
     return this.prisma.companyUser.findMany({
       where: { companyId },
+      orderBy: { createdAt: 'desc' },
       select: {
         id: true,
         status: true,
@@ -155,15 +142,99 @@ export class CompaniesService {
         user: {
           select: {
             id: true,
-            email: true,
             nombre: true,
-            phone: true,
+            email: true,
+            role: true,
             status: true,
           },
         },
       },
-      orderBy: { createdAt: 'desc' },
     });
   }
+
+  async assignEmployees(
+    companyId: number,
+    userIds: number[],
+    actor: CurrentUserJwt,
+  ) {
+    await this.assertOwner(actor, companyId);
+
+    const users = await this.prisma.user.findMany({
+      where: { id: { in: userIds } },
+      select: { id: true, role: true, status: true },
+    });
+
+    if (users.length !== userIds.length) {
+      throw new BadRequestException('Uno o más users no existen.');
+    }
+
+    const invalid = users.filter(
+      (u) => u.role !== BaseRole.EMPLOYEE || u.status !== 'ACTIVE',
+    );
+    if (invalid.length) {
+      throw new BadRequestException('Solo EMPLOYEE activos pueden asignarse.');
+    }
+
+    // crea los que no existan
+    await this.prisma.companyUser.createMany({
+      data: userIds.map((id) => ({ companyId, userId: id, status: 'ACTIVE' })),
+      skipDuplicates: true,
+    });
+
+    // reactiva si estaban INACTIVE
+    await this.prisma.companyUser.updateMany({
+      where: { companyId, userId: { in: userIds }, status: 'INACTIVE' },
+      data: { status: 'ACTIVE' },
+    });
+
+    return { ok: true };
+  }
+
+  async unassignEmployees(
+    companyId: number,
+    userIds: number[],
+    actor: CurrentUserJwt,
+  ) {
+    await this.assertOwner(actor, companyId);
+
+    await this.prisma.companyUser.updateMany({
+      where: { companyId, userId: { in: userIds } },
+      data: { status: 'INACTIVE' },
+    });
+
+    return { ok: true };
+  }
+
+  async update(
+    companyId: number,
+    dto: UpdateCompanyDto,
+    actor: CurrentUserJwt,
+  ) {
+    await this.assertOwner(actor, companyId);
+
+    // opcional: evitar update vacío
+    const hasChanges =
+      dto.name !== undefined ||
+      dto.phone !== undefined ||
+      dto.status !== undefined;
+
+    if (!hasChanges) {
+      throw new BadRequestException('No hay campos para actualizar.');
+    }
+
+    try {
+      return await this.prisma.company.update({
+        where: { id: companyId },
+        data: {
+          ...(dto.name !== undefined ? { name: dto.name } : {}),
+          ...(dto.phone !== undefined ? { phone: dto.phone } : {}),
+          ...(dto.status !== undefined
+            ? { status: dto.status as CompanyStatus }
+            : {}),
+        },
+      });
+    } catch (e: any) {
+      throw new BadRequestException('No se pudo actualizar la company.');
+    }
+  }
 }
-  */

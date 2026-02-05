@@ -43,13 +43,13 @@ export class PermissionsController {
 
   // -------- User permissions --------
   @Get('users/:userId/permissions')
-  @RequirePermissions('USERS:READ')
+  @RequirePermissions('PERMISSIONS-USERS:READ')
   listUserPermissions(@Param('userId', ParseIntPipe) userId: number) {
     return this.permissions.listUserPermissions(userId);
   }
 
   @Post('users/:userId/permissions/set')
-  @RequirePermissions('USERS:UPDATE')
+  @RequirePermissions('PERMISSIONS-USERS:UPDATE')
   setUserPermissions(
     @Param('userId', ParseIntPipe) userId: number,
     @Body() dto: SetUserPermissionsDto,
@@ -59,7 +59,7 @@ export class PermissionsController {
   }
 
   @Post('users/:userId/permissions/add')
-  @RequirePermissions('USERS:UPDATE')
+  @RequirePermissions('PERMISSIONS-USERS:UPDATE')
   addUserPermissions(
     @Param('userId', ParseIntPipe) userId: number,
     @Body() dto: MutateUserPermissionsDto,
@@ -69,7 +69,7 @@ export class PermissionsController {
   }
 
   @Post('users/:userId/permissions/remove')
-  @RequirePermissions('USERS:UPDATE')
+  @RequirePermissions('PERMISSIONS-USERS:UPDATE')
   removeUserPermissions(
     @Param('userId', ParseIntPipe) userId: number,
     @Body() dto: MutateUserPermissionsDto,

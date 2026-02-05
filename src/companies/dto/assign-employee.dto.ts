@@ -1,11 +1,9 @@
-import { IsInt, Min } from 'class-validator';
+// dto/assign-employee.dto.ts
+import { ArrayNotEmpty, IsArray, IsInt } from 'class-validator';
 
-export class AssignCompanyUserDto {
-  @IsInt()
-  @Min(1)
-  userId: number;
-
-  @IsInt()
-  @Min(1)
-  roleId: number; // Role (scope COMPANY normalmente)
+export class AssignCompanyEmployeesDto {
+  @IsArray()
+  @ArrayNotEmpty()
+  @IsInt({ each: true })
+  userIds: number[];
 }

@@ -1,4 +1,4 @@
-/* import { Module } from '@nestjs/common';
+import { Module } from '@nestjs/common';
 import { CompaniesService } from './companies.service';
 import { CompaniesController } from './companies.controller';
 
@@ -7,4 +7,3 @@ import { CompaniesController } from './companies.controller';
   providers: [CompaniesService],
 })
 export class CompaniesModule {}
-*/

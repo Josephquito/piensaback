@@ -1,18 +1,31 @@
-import { IsEmail, IsEnum, IsString, MinLength } from 'class-validator';
+import {
+  IsEmail,
+  IsEnum,
+  IsNotEmpty,
+  IsString,
+  MinLength,
+} from 'class-validator';
+
+export enum CreateUserBaseRole {
+  ADMIN = 'ADMIN',
+  EMPLOYEE = 'EMPLOYEE',
+}
 
 export class CreateUserDto {
   @IsEmail()
   email: string;
 
   @IsString()
+  @IsNotEmpty()
   phone: string;
 
   @IsString()
+  @IsNotEmpty()
   nombre: string;
 
   @MinLength(6)
   password: string;
 
-  @IsEnum(['ADMIN', 'EMPLOYEE'] as const)
-  baseRole: 'ADMIN' | 'EMPLOYEE';
+  @IsEnum(CreateUserBaseRole)
+  baseRole: CreateUserBaseRole;
 }

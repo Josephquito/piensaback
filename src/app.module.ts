@@ -14,6 +14,13 @@ import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
 import { PermissionsGuard } from './common/guards/permissions.guard';
 import { PermissionsModule } from './permissions/permissions.module';
 import { AuthorizationModule } from './authorization/authorization.module';
+import { CompaniesModule } from './companies/companies.module';
+import { SuppliersModule } from './suppliers/suppliers.module';
+import { CustomersModule } from './customers/customers.module';
+import { StreamingPlatformsModule } from './streaming-platforms/streaming-platforms.module';
+import { KardexModule } from './kardex/kardex.module';
+import { StreamingAccountModule } from './streaming-account/streaming-account.module';
+import { StreamingSalesModule } from './streaming-sales/streaming-sales.module';
 
 @Module({
   imports: [
@@ -23,7 +30,13 @@ import { AuthorizationModule } from './authorization/authorization.module';
     PermissionsModule,
 
     AuthorizationModule,
-    //CompaniesModule,
+    CompaniesModule,
+    SuppliersModule,
+    CustomersModule,
+    StreamingPlatformsModule,
+    KardexModule,
+    StreamingAccountModule,
+    StreamingSalesModule,
   ],
   controllers: [AppController],
   providers: [

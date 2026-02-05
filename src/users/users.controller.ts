@@ -8,11 +8,13 @@ import {
   Patch,
   Post,
   Req,
+  UseGuards,
 } from '@nestjs/common';
 import { UsersService } from './users.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { RequirePermissions } from '../common/decorators/require-permissions.decorator';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 
 type ReqUser = {
   id: number;
@@ -22,6 +24,7 @@ type ReqUser = {
 };
 
 @Controller('users')
+@UseGuards(JwtAuthGuard)
 export class UsersController {
   constructor(private readonly usersService: UsersService) {}
 
@@ -37,12 +40,14 @@ export class UsersController {
     return this.usersService.findAll(req.user);
   }
 
-  // ✅ tu endpoint de siempre
   @Get('me')
-  me(@Req() req: { user: ReqUser }) {
-    return this.usersService.findOne(req.user.id, req.user);
+  async me(@Req() req: { user: ReqUser }) {
+    const user = await this.usersService.me(req.user.id);
+    return {
+      ...user,
+      permissions: req.user.permissions, // ✅ conservar permisos
+    };
   }
-
   @Get(':id')
   @RequirePermissions('USERS:READ')
   findOne(

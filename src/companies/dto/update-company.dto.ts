@@ -1,18 +1,18 @@
-import { IsEnum, IsOptional, IsString, MaxLength } from 'class-validator';
-import { CompanyStatus } from '@prisma/client';
+// dto/update-company.dto.ts
+import { IsIn, IsOptional, IsString, MinLength } from 'class-validator';
 
 export class UpdateCompanyDto {
   @IsOptional()
   @IsString()
-  @MaxLength(120)
+  @MinLength(2)
   name?: string;
 
   @IsOptional()
   @IsString()
-  @MaxLength(40)
+  @MinLength(5)
   phone?: string;
 
   @IsOptional()
-  @IsEnum(CompanyStatus)
-  status?: CompanyStatus; // si quieres permitir INACTIVE/ACTIVE, NO PENDING_DELETE (lo controlamos en service)
+  @IsIn(['ACTIVE', 'INACTIVE'])
+  status?: 'ACTIVE' | 'INACTIVE';
 }
