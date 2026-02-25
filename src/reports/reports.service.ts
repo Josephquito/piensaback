@@ -8,7 +8,6 @@ import {
 
 /**
  * Función auxiliar para construir filtros SQL puros de forma segura.
- * Optimizada para no cargar datos innecesarios en memoria.
  */
 function buildSalesFilters(
   companyId: number,
@@ -52,7 +51,6 @@ export class ReportsService {
     return v ? new Prisma.Decimal(v) : new Prisma.Decimal(0);
   }
 
-  // --- Helpers de Fechas ---
   private dayRangeUtc(day: string) {
     const start = new Date(`${day}T00:00:00.000Z`);
     if (isNaN(start.getTime())) throw new BadRequestException('day inválido.');
@@ -95,19 +93,15 @@ export class ReportsService {
     return where;
   }
 
-  // ------------------------------------------------------------------
-  // 1) Reporte Paginado (Optimizado con SELECT)
-  // ------------------------------------------------------------------
   async streamingSalesReport(
     query: StreamingSalesReportQueryDto,
     companyId: number,
   ) {
     const page = query.page ?? 1;
-    const pageSize = Math.min(query.pageSize ?? 50, 100); // Límite de seguridad
+    const pageSize = Math.min(query.pageSize ?? 50, 100);
     const skip = (page - 1) * pageSize;
     const where = this.buildWhere(query, companyId);
 
-    // Usamos SELECT en lugar de INCLUDE para no saturar la RAM
     const [total, rows, sums] = await this.prisma.$transaction([
       this.prisma.streamingSale.count({ where }),
       this.prisma.streamingSale.findMany({
@@ -121,10 +115,12 @@ export class ReportsService {
           salePrice: true,
           costAtSale: true,
           status: true,
+          cutoffDate: true,
           customer: { select: { id: true, name: true } },
           platform: { select: { id: true, name: true } },
-          account: { select: { id: true, email: true } }, // Solo email, no password
-          profile: { select: { id: true, name: true } },
+          account: { select: { id: true, email: true } },
+          // CORRECCIÓN AQUÍ: Usamos profileNo según tu schema
+          profile: { select: { id: true, profileNo: true } },
         },
       }),
       this.prisma.streamingSale.aggregate({
@@ -160,9 +156,6 @@ export class ReportsService {
     };
   }
 
-  // ------------------------------------------------------------------
-  // 2) Summary (Consumo mínimo de RAM)
-  // ------------------------------------------------------------------
   async streamingSalesSummary(
     query: StreamingSalesReportQueryDto,
     companyId: number,
@@ -173,7 +166,6 @@ export class ReportsService {
       _sum: { salePrice: true, costAtSale: true },
       _count: { _all: true },
     });
-
     const revenue = this.dec(sums._sum.salePrice);
     const cost = this.dec(sums._sum.costAtSale);
 
@@ -187,12 +179,8 @@ export class ReportsService {
     };
   }
 
-  // ------------------------------------------------------------------
-  // 3) Group By Day (SQL Raw)
-  // ------------------------------------------------------------------
   async streamingSalesByDay(query: any, companyId: number) {
     const whereClause = buildSalesFilters(companyId, query);
-
     return this.prisma.$queryRaw<any[]>(Prisma.sql`
       SELECT
         to_char(date_trunc('day', s.sale_date), 'YYYY-MM-DD') AS day,
@@ -205,16 +193,12 @@ export class ReportsService {
       ${whereClause}
       GROUP BY 1
       ORDER BY 1 ASC
-      LIMIT 1000; -- Protección contra dumps masivos
+      LIMIT 1000;
     `);
   }
 
-  // ------------------------------------------------------------------
-  // 4) Group By Platform (SQL Raw)
-  // ------------------------------------------------------------------
   async streamingSalesByPlatform(query: any, companyId: number) {
     const whereClause = buildSalesFilters(companyId, query);
-
     return this.prisma.$queryRaw<any[]>(Prisma.sql`
       SELECT
         p.id AS "platformId",
