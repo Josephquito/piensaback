@@ -63,4 +63,16 @@ export class StreamingSalesController {
   ) {
     return this.service.update(id, dto, req.user, req.companyId);
   }
+
+  /**
+   * Acción para "vaciar" el perfil (terminar relación y devolver a stock)
+   */
+  @Post(':id/empty')
+  @RequirePermissions('STREAMING_SALES:UPDATE')
+  empty(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req: { user: ReqUser; companyId: number },
+  ) {
+    return this.service.empty(id, req.user, req.companyId);
+  }
 }

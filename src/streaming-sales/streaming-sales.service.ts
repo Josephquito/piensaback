@@ -64,22 +64,15 @@ export class StreamingSalesService {
       throw new BadRequestException('daysAssigned inválido.');
     }
 
-    // validar customer pertenece a company
     const customer = await this.prisma.customer.findFirst({
       where: { id: dto.customerId, companyId },
       select: { id: true },
     });
     if (!customer) throw new NotFoundException('Cliente no accesible.');
 
-    // traer cuenta con plataforma y validar company + active
     const account = await this.prisma.streamingAccount.findFirst({
       where: { id: dto.accountId, companyId },
-      select: {
-        id: true,
-        companyId: true,
-        platformId: true,
-        status: true,
-      },
+      select: { id: true, companyId: true, platformId: true, status: true },
     });
     if (!account) throw new NotFoundException('Cuenta no accesible.');
     if (account.status !== StreamingAccountStatus.ACTIVE) {
@@ -88,7 +81,6 @@ export class StreamingSalesService {
       );
     }
 
-    // validar perfil pertenece a esa cuenta y está disponible
     const profile = await this.prisma.accountProfile.findFirst({
       where: {
         id: dto.profileId,
@@ -105,7 +97,6 @@ export class StreamingSalesService {
 
     const cutoffDate = this.addDays(saleDate, dto.daysAssigned);
 
-    // 1) Kardex OUT para obtener costo promedio vigente
     const { unitCost } = await this.kardex.registerOut({
       companyId,
       platformId: account.platformId,
@@ -114,9 +105,7 @@ export class StreamingSalesService {
       accountId: account.id,
     });
 
-    // 2) Crear venta + marcar perfil SOLD (atomicidad)
     return this.prisma.$transaction(async (tx) => {
-      // marcar perfil SOLD primero para evitar doble venta
       await tx.accountProfile.update({
         where: { id: dto.profileId },
         data: { status: 'SOLD' },
@@ -145,10 +134,6 @@ export class StreamingSalesService {
         },
       });
 
-      // opcional: link del movimiento de kardex con saleId
-      // (si quieres 100% trazabilidad)
-      // pero registerOut ya creó el movimiento con saleId null.
-      // Aquí lo actualizamos al último movimiento OUT de esa cuenta/refType.
       const lastMove = await tx.kardexMovement.findFirst({
         where: {
           companyId,
@@ -176,24 +161,14 @@ export class StreamingSalesService {
     return this.prisma.streamingSale.findMany({
       where: { companyId },
       orderBy: { createdAt: 'desc' },
-      include: {
-        customer: true,
-        platform: true,
-        account: true,
-        profile: true,
-      },
+      include: { customer: true, platform: true, account: true, profile: true },
     });
   }
 
   async findOne(id: number, _actor: ReqUser, companyId: number) {
     const sale = await this.prisma.streamingSale.findFirst({
       where: { id, companyId },
-      include: {
-        customer: true,
-        platform: true,
-        account: true,
-        profile: true,
-      },
+      include: { customer: true, platform: true, account: true, profile: true },
     });
     if (!sale) throw new NotFoundException('Venta no existe.');
     return sale;
@@ -207,19 +182,99 @@ export class StreamingSalesService {
   ) {
     const sale = await this.findOne(id, actor, companyId);
 
-    // Cancelación: devuelve stock? (depende de tu negocio)
-    // Por ahora: cancelar NO devuelve stock automáticamente para no romper kardex.
-    // Si quieres que devuelva stock, lo implementamos con IN (unitCost=costAtSale).
-    try {
-      return await this.prisma.streamingSale.update({
-        where: { id: sale.id },
-        data: {
-          ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
-          ...(dto.status !== undefined ? { status: dto.status as any } : {}),
+    // Validar nuevo cliente si se envía
+    if (dto.customerId && dto.customerId !== sale.customerId) {
+      const customer = await this.prisma.customer.findFirst({
+        where: { id: dto.customerId, companyId },
+      });
+      if (!customer) throw new NotFoundException('El nuevo cliente no existe.');
+    }
+
+    // Validar nuevo perfil si se envía (debe ser de la misma cuenta y estar AVAILABLE)
+    if (dto.profileId && dto.profileId !== sale.profileId) {
+      const profile = await this.prisma.accountProfile.findFirst({
+        where: {
+          id: dto.profileId,
+          accountId: sale.accountId,
+          status: 'AVAILABLE',
         },
       });
-    } catch {
-      throw new BadRequestException('No se pudo actualizar la venta.');
+      if (!profile)
+        throw new BadRequestException(
+          'El nuevo perfil no está disponible o no pertenece a esta cuenta.',
+        );
     }
+
+    // Recalcular fechas
+    let newCutoffDate = sale.cutoffDate;
+    const saleDate = dto.saleDate
+      ? this.parseDate(dto.saleDate, 'saleDate')
+      : sale.saleDate;
+    const daysAssigned = dto.daysAssigned ?? sale.daysAssigned;
+
+    if (dto.saleDate || dto.daysAssigned) {
+      newCutoffDate = this.addDays(saleDate, daysAssigned);
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      // Si cambió el perfil, liberar el anterior y ocupar el nuevo
+      if (dto.profileId && dto.profileId !== sale.profileId) {
+        await tx.accountProfile.update({
+          where: { id: sale.profileId },
+          data: { status: 'AVAILABLE' },
+        });
+        await tx.accountProfile.update({
+          where: { id: dto.profileId },
+          data: { status: 'SOLD' },
+        });
+      }
+
+      return tx.streamingSale.update({
+        where: { id: sale.id },
+        data: {
+          ...(dto.customerId ? { customerId: dto.customerId } : {}),
+          ...(dto.profileId ? { profileId: dto.profileId } : {}),
+          ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
+          ...(dto.salePrice
+            ? { salePrice: this.parseDecimal(dto.salePrice, 'salePrice') }
+            : {}),
+          ...(dto.saleDate ? { saleDate } : {}),
+          ...(dto.daysAssigned ? { daysAssigned } : {}),
+          cutoffDate: newCutoffDate,
+        },
+        include: { customer: true, profile: true },
+      });
+    });
+  }
+
+  async empty(id: number, actor: ReqUser, companyId: number) {
+    const sale = await this.prisma.streamingSale.findFirst({
+      where: { id, companyId, status: SaleStatus.ACTIVE },
+    });
+
+    if (!sale) throw new NotFoundException('Venta activa no encontrada.');
+
+    return this.prisma.$transaction(async (tx) => {
+      await tx.accountProfile.update({
+        where: { id: sale.profileId },
+        data: { status: 'AVAILABLE' },
+      });
+
+      const updatedSale = await tx.streamingSale.update({
+        where: { id: sale.id },
+        data: { status: SaleStatus.CANCELED },
+      });
+
+      await this.kardex.registerIn({
+        companyId,
+        platformId: sale.platformId,
+        qty: 1,
+        refType: KardexRefType.PROFILE_SALE,
+        accountId: sale.accountId,
+        unitCost: sale.costAtSale,
+      });
+
+      return updatedSale;
+    });
   }
 }

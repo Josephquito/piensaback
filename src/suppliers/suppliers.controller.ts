@@ -72,4 +72,17 @@ export class SuppliersController {
   ) {
     return this.suppliersService.remove(id, req.user, req.companyId);
   }
+
+  @Get(':id/accounts')
+  @RequirePermissions('SUPPLIERS:READ')
+  accountsBySupplier(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req: { user: ReqUser; companyId: number },
+  ) {
+    return this.suppliersService.accountsBySupplier(
+      id,
+      req.user,
+      req.companyId,
+    );
+  }
 }

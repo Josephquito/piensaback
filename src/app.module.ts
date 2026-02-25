@@ -21,6 +21,7 @@ import { StreamingPlatformsModule } from './streaming-platforms/streaming-platfo
 import { KardexModule } from './kardex/kardex.module';
 import { StreamingAccountModule } from './streaming-account/streaming-account.module';
 import { StreamingSalesModule } from './streaming-sales/streaming-sales.module';
+import { ReportsModule } from './reports/reports.module';
 
 @Module({
   imports: [
@@ -37,6 +38,7 @@ import { StreamingSalesModule } from './streaming-sales/streaming-sales.module';
     KardexModule,
     StreamingAccountModule,
     StreamingSalesModule,
+    ReportsModule,
   ],
   controllers: [AppController],
   providers: [

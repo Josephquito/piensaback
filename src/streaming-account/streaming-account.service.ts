@@ -17,6 +17,28 @@ type ReqUser = {
   permissions: string[];
 };
 
+// ✅ Tipos explícitos para evitar "unknown" en op.payload
+type KardexInPayload = {
+  companyId: number;
+  platformId: number;
+  qty: number;
+  unitCost: Prisma.Decimal;
+  refType: KardexRefType;
+  accountId?: number;
+};
+
+type KardexAdjustOutPayload = {
+  companyId: number;
+  platformId: number;
+  qty: number;
+  refType: KardexRefType;
+  accountId?: number;
+};
+
+type KardexOp =
+  | { kind: 'IN'; payload: KardexInPayload }
+  | { kind: 'ADJUST_OUT'; payload: KardexAdjustOutPayload };
+
 @Injectable()
 export class StreamingAccountsService {
   constructor(
@@ -99,6 +121,12 @@ export class StreamingAccountsService {
           );
         }
 
+        // ✅ 1.1) Sumar gasto histórico al proveedor (ATÓMICO)
+        await tx.supplier.update({
+          where: { id: dto.supplierId },
+          data: { historicalSpend: { increment: totalCost } },
+        });
+
         // 2) Crear perfiles 1..N
         const profilesData = Array.from({ length: profilesTotal }, (_, i) => ({
           accountId: account.id,
@@ -110,16 +138,11 @@ export class StreamingAccountsService {
           await tx.accountProfile.createMany({ data: profilesData });
         }
 
-        // 3) Kardex IN (N perfiles)
-        //    OJO: usamos el KardexService, pero aquí estamos dentro de tx,
-        //    así que lo hacemos directo con el prisma global? Para no mezclar,
-        //    llamamos al service fuera de la tx. Mejor:
-        //    -> Creamos el IN fuera de la tx y si falla, tiramos error.
-        //    Pero si quieres 100% atomicidad, refactorizamos KardexService para aceptar tx.
-        //    Por ahora lo hacemos fuera de tx: no suele fallar.
+        // (Kardex se registra fuera)
         return account;
       })
       .then(async (account) => {
+        // 3) Kardex IN (N perfiles)
         await this.kardex.registerIn({
           companyId,
           platformId: dto.platformId,
@@ -175,7 +198,7 @@ export class StreamingAccountsService {
   ) {
     const account = await this.findOne(id, actor, companyId);
 
-    // Si cambian platform/supplier, validar pertenencia a company
+    // validar platform/supplier si vienen
     if (dto.platformId !== undefined) {
       const p = await this.prisma.streamingPlatform.findFirst({
         where: { id: dto.platformId, companyId },
@@ -192,7 +215,19 @@ export class StreamingAccountsService {
       if (!s) throw new NotFoundException('Proveedor no accesible.');
     }
 
-    // Preparar campos
+    // ---- Cálculo para gasto histórico ----
+    const oldSupplierId = account.supplierId;
+    const newSupplierId = dto.supplierId ?? oldSupplierId;
+
+    const oldCost = account.totalCost; // Prisma.Decimal
+    const newCost =
+      dto.totalCost !== undefined
+        ? this.parseDecimal(dto.totalCost, 'totalCost')
+        : oldCost;
+
+    const sameSupplier = oldSupplierId === newSupplierId;
+
+    // ---- Preparar data update ----
     const data: Prisma.StreamingAccountUpdateInput = {};
 
     if (dto.email !== undefined) data.email = dto.email.trim();
@@ -206,7 +241,7 @@ export class StreamingAccountsService {
       data.cutoffDate = this.parseDate(dto.cutoffDate, 'cutoffDate');
     }
     if (dto.totalCost !== undefined) {
-      data.totalCost = this.parseDecimal(dto.totalCost, 'totalCost');
+      data.totalCost = newCost;
     }
 
     if (dto.platformId !== undefined)
@@ -214,131 +249,174 @@ export class StreamingAccountsService {
     if (dto.supplierId !== undefined)
       data.supplier = { connect: { id: dto.supplierId } };
 
-    // 1) Manejo cambio profilesTotal
-    if (
-      dto.profilesTotal !== undefined &&
-      dto.profilesTotal !== account.profilesTotal
-    ) {
-      const newTotal = dto.profilesTotal;
-      const oldTotal = account.profilesTotal;
+    // ✅ ops de kardex bien tipadas (adiós unknown)
+    const kardexOps: KardexOp[] = [];
 
-      // contar vendidos/disponibles
-      const soldCount = await this.prisma.accountProfile.count({
-        where: { accountId: account.id, status: 'SOLD' },
-      });
-      const availableCount = await this.prisma.accountProfile.count({
-        where: { accountId: account.id, status: 'AVAILABLE' },
-      });
+    // Valores efectivos para kardex
+    const effectivePlatformId = dto.platformId ?? account.platformId;
 
-      // no puedes bajar por debajo de lo vendido
-      if (newTotal < soldCount) {
-        throw new BadRequestException(
-          `No se puede reducir a ${newTotal}: ya vendiste ${soldCount} perfiles.`,
-        );
-      }
+    await this.prisma.$transaction(async (tx) => {
+      // 1) Manejo cambio profilesTotal (usa tx en vez de prisma directo)
+      if (
+        dto.profilesTotal !== undefined &&
+        dto.profilesTotal !== account.profilesTotal
+      ) {
+        const newTotal = dto.profilesTotal;
+        const oldTotal = account.profilesTotal;
 
-      if (newTotal > oldTotal) {
-        // delta IN
-        const delta = newTotal - oldTotal;
-
-        // crear perfiles nuevos (oldTotal+1..newTotal)
-        const newProfiles = Array.from({ length: delta }, (_, i) => ({
-          accountId: account.id,
-          profileNo: oldTotal + i + 1,
-          status: 'AVAILABLE' as const,
-        }));
-
-        await this.prisma.accountProfile.createMany({ data: newProfiles });
-
-        // unitCost = totalCost / newTotal (tu lógica)
-        const totalCost =
-          dto.totalCost !== undefined
-            ? this.parseDecimal(dto.totalCost, 'totalCost')
-            : account.totalCost;
-
-        const unitCost = totalCost.div(newTotal);
-
-        await this.kardex.registerIn({
-          companyId,
-          platformId: dto.platformId ?? account.platformId,
-          qty: delta,
-          unitCost,
-          refType: KardexRefType.PROFILE_ADJUST,
-          accountId: account.id,
+        const soldCount = await tx.accountProfile.count({
+          where: { accountId: account.id, status: 'SOLD' },
+        });
+        const availableCount = await tx.accountProfile.count({
+          where: { accountId: account.id, status: 'AVAILABLE' },
         });
 
-        data.profilesTotal = newTotal;
-      } else {
-        // delta ADJUST OUT (quitar disponibles)
-        const need = oldTotal - newTotal;
-
-        if (availableCount < need) {
+        if (newTotal < soldCount) {
           throw new BadRequestException(
-            `No se puede reducir: disponibles ${availableCount}, se necesita dar de baja ${need}.`,
+            `No se puede reducir a ${newTotal}: ya vendiste ${soldCount} perfiles.`,
           );
         }
 
-        // bloquear los últimos perfiles disponibles
-        const toBlock = await this.prisma.accountProfile.findMany({
-          where: { accountId: account.id, status: 'AVAILABLE' },
-          orderBy: { profileNo: 'desc' },
-          take: need,
-          select: { id: true },
-        });
+        if (newTotal > oldTotal) {
+          const delta = newTotal - oldTotal;
 
-        await this.prisma.accountProfile.updateMany({
-          where: { id: { in: toBlock.map((p) => p.id) } },
-          data: { status: 'BLOCKED' },
-        });
+          const newProfiles = Array.from({ length: delta }, (_, i) => ({
+            accountId: account.id,
+            profileNo: oldTotal + i + 1,
+            status: 'AVAILABLE' as const,
+          }));
 
-        await this.kardex.registerAdjustOut({
-          companyId,
-          platformId: dto.platformId ?? account.platformId,
-          qty: need,
-          refType: KardexRefType.PROFILE_ADJUST,
-          accountId: account.id,
-        });
+          if (newProfiles.length > 0) {
+            await tx.accountProfile.createMany({ data: newProfiles });
+          }
 
-        data.profilesTotal = newTotal;
+          // unitCost = totalCost / newTotal (usar newCost efectivo)
+          const unitCost =
+            newTotal === 0 ? new Prisma.Decimal(0) : newCost.div(newTotal);
+
+          kardexOps.push({
+            kind: 'IN',
+            payload: {
+              companyId,
+              platformId: effectivePlatformId,
+              qty: delta,
+              unitCost,
+              refType: KardexRefType.PROFILE_ADJUST,
+              accountId: account.id,
+            },
+          });
+
+          data.profilesTotal = newTotal;
+        } else {
+          const need = oldTotal - newTotal;
+
+          if (availableCount < need) {
+            throw new BadRequestException(
+              `No se puede reducir: disponibles ${availableCount}, se necesita dar de baja ${need}.`,
+            );
+          }
+
+          const toBlock = await tx.accountProfile.findMany({
+            where: { accountId: account.id, status: 'AVAILABLE' },
+            orderBy: { profileNo: 'desc' },
+            take: need,
+            select: { id: true },
+          });
+
+          if (toBlock.length > 0) {
+            await tx.accountProfile.updateMany({
+              where: { id: { in: toBlock.map((p) => p.id) } },
+              data: { status: 'BLOCKED' },
+            });
+          }
+
+          kardexOps.push({
+            kind: 'ADJUST_OUT',
+            payload: {
+              companyId,
+              platformId: effectivePlatformId,
+              qty: need,
+              refType: KardexRefType.PROFILE_ADJUST,
+              accountId: account.id,
+            },
+          });
+
+          data.profilesTotal = newTotal;
+        }
       }
-    }
 
-    // 2) Manejo inactivación
-    if (
-      dto.status === 'INACTIVE' &&
-      account.status !== StreamingAccountStatus.INACTIVE
-    ) {
-      const availableCount = await this.prisma.accountProfile.count({
-        where: { accountId: account.id, status: 'AVAILABLE' },
-      });
-
-      if (availableCount > 0) {
-        // bloquear disponibles
-        await this.prisma.accountProfile.updateMany({
+      // 2) Manejo inactivación (con tx)
+      if (
+        dto.status === 'INACTIVE' &&
+        account.status !== StreamingAccountStatus.INACTIVE
+      ) {
+        const availableCount = await tx.accountProfile.count({
           where: { accountId: account.id, status: 'AVAILABLE' },
-          data: { status: 'BLOCKED' },
         });
 
-        await this.kardex.registerAdjustOut({
-          companyId,
-          platformId: dto.platformId ?? account.platformId,
-          qty: availableCount,
-          refType: KardexRefType.ACCOUNT_INACTIVATION,
-          accountId: account.id,
-        });
+        if (availableCount > 0) {
+          await tx.accountProfile.updateMany({
+            where: { accountId: account.id, status: 'AVAILABLE' },
+            data: { status: 'BLOCKED' },
+          });
+
+          kardexOps.push({
+            kind: 'ADJUST_OUT',
+            payload: {
+              companyId,
+              platformId: effectivePlatformId,
+              qty: availableCount,
+              refType: KardexRefType.ACCOUNT_INACTIVATION,
+              accountId: account.id,
+            },
+          });
+        }
+
+        data.status = StreamingAccountStatus.INACTIVE;
       }
 
-      data.status = StreamingAccountStatus.INACTIVE;
-    }
+      // 3) ✅ Recalcular gasto histórico (con tx)
+      if (oldSupplierId !== newSupplierId) {
+        // restar al viejo el costo anterior
+        await tx.supplier.update({
+          where: { id: oldSupplierId },
+          data: { historicalSpend: { decrement: oldCost } },
+        });
 
-    // Ejecutar update
-    try {
-      await this.prisma.streamingAccount.update({
-        where: { id: account.id },
-        data,
-      });
-    } catch {
-      throw new BadRequestException('No se pudo actualizar la cuenta.');
+        // sumar al nuevo el costo nuevo
+        await tx.supplier.update({
+          where: { id: newSupplierId },
+          data: { historicalSpend: { increment: newCost } },
+        });
+      } else {
+        // mismo proveedor: ajustar delta si cambió costo
+        if (dto.totalCost !== undefined) {
+          const delta = newCost.sub(oldCost);
+          await tx.supplier.update({
+            where: { id: oldSupplierId },
+            data: { historicalSpend: { increment: delta } },
+          });
+        }
+      }
+
+      // 4) Ejecutar update de cuenta (con tx)
+      try {
+        await tx.streamingAccount.update({
+          where: { id: account.id },
+          data,
+        });
+      } catch {
+        throw new BadRequestException('No se pudo actualizar la cuenta.');
+      }
+    });
+
+    // 5) Ejecutar kardex fuera (misma estrategia que tu create)
+    for (const op of kardexOps) {
+      if (op.kind === 'IN') {
+        await this.kardex.registerIn(op.payload);
+      } else {
+        await this.kardex.registerAdjustOut(op.payload);
+      }
     }
 
     return this.findOne(account.id, actor, companyId);

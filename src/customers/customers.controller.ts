@@ -7,6 +7,7 @@ import {
   ParseIntPipe,
   Patch,
   Post,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
@@ -17,6 +18,7 @@ import { CompanyScopeGuard } from '../common/guards/company-scope.guard';
 import { CustomersService } from './customers.service';
 import { CreateCustomerDto } from './dto/create-customer.dto';
 import { UpdateCustomerDto } from './dto/update-customer.dto';
+import { CustomerReportQueryDto } from './dto/customer-report-query.dto';
 
 type ReqUser = {
   id: number;
@@ -43,6 +45,17 @@ export class CustomersController {
   @RequirePermissions('CUSTOMERS:READ')
   findAll(@Req() req: { user: ReqUser; companyId: number }) {
     return this.customersService.findAll(req.user, req.companyId);
+  }
+
+  // REPORTE DE HISTORIAL
+  @Get(':id/history')
+  @RequirePermissions('CUSTOMERS:READ')
+  getHistory(
+    @Param('id', ParseIntPipe) id: number,
+    @Query() query: CustomerReportQueryDto,
+    @Req() req: { user: ReqUser; companyId: number },
+  ) {
+    return this.customersService.getHistory(id, req.companyId, query);
   }
 
   @Get(':id')

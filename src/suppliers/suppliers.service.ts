@@ -93,4 +93,27 @@ export class SuppliersService {
       throw new BadRequestException('No se pudo eliminar el proveedor.');
     }
   }
+
+  async accountsBySupplier(
+    supplierId: number,
+    _actor: ReqUser,
+    companyId: number,
+  ) {
+    // asegura pertenencia
+    await this.findOne(supplierId, _actor, companyId);
+
+    return this.prisma.streamingAccount.findMany({
+      where: { companyId, supplierId },
+      select: {
+        id: true,
+        email: true,
+        purchaseDate: true,
+        cutoffDate: true,
+        status: true,
+        totalCost: true,
+        platformId: true,
+      },
+      orderBy: { purchaseDate: 'desc' },
+    });
+  }
 }

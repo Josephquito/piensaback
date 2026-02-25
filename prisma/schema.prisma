@@ -216,6 +216,8 @@ model Supplier {
   name      String
   contact   String
 
+  historicalSpend Decimal @db.Decimal(12, 4) @default(0) @map("historical_spend")
+
   company   Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
   accounts  StreamingAccount[]
 
@@ -226,6 +228,7 @@ model Supplier {
   @@unique([companyId, name])
   @@map("suppliers")
 }
+
 
 model Customer {
   id        Int      @id @default(autoincrement())

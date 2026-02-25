@@ -4,10 +4,11 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
-import { Prisma } from '@prisma/client';
+import { Prisma, SaleStatus } from '@prisma/client';
 
 import { CreateCustomerDto } from './dto/create-customer.dto';
 import { UpdateCustomerDto } from './dto/update-customer.dto';
+import { CustomerReportQueryDto } from './dto/customer-report-query.dto';
 
 type ReqUser = {
   id: number;
@@ -50,6 +51,62 @@ export class CustomersService {
     });
     if (!customer) throw new NotFoundException('Cliente no existe.');
     return customer;
+  }
+
+  // ======================================================
+  // NUEVO: REPORTE DE HISTORIAL
+  // ======================================================
+  async getHistory(
+    id: number,
+    companyId: number,
+    query: CustomerReportQueryDto,
+  ) {
+    const customer = await this.prisma.customer.findFirst({
+      where: { id, companyId },
+      include: {
+        sales: {
+          where: query.status ? { status: query.status } : {},
+          orderBy: { saleDate: 'desc' },
+          include: {
+            platform: { select: { name: true } },
+            account: {
+              select: {
+                email: true,
+                password: true,
+                status: true,
+              },
+            },
+            profile: { select: { profileNo: true } },
+          },
+        },
+      },
+    });
+
+    if (!customer) throw new NotFoundException('Cliente no encontrado');
+
+    // Cálculos rápidos para el Front-end
+    const totalSpent = customer.sales.reduce(
+      (acc, sale) => acc + Number(sale.salePrice),
+      0,
+    );
+    const activeSales = customer.sales.filter(
+      (s) => s.status === SaleStatus.ACTIVE,
+    ).length;
+
+    return {
+      customer: {
+        id: customer.id,
+        name: customer.name,
+        contact: customer.contact,
+        source: customer.source,
+      },
+      metrics: {
+        totalSales: customer.sales.length,
+        totalSpent,
+        activeSales,
+      },
+      history: customer.sales,
+    };
   }
 
   async update(
