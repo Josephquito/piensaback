@@ -4,44 +4,57 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { BaseRole } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { CurrentUserJwt } from '../common/types/current-user-jwt.type';
 import { CreatePermissionDto } from './dto/create-permission.dto';
-import { MutateUserPermissionsDto } from './dto/mutate-user-permissions.dto';
+import { UpdatePermissionDto } from './dto/update-permission.dto';
+import { PermissionIdsDto } from './dto/permission-ids.dto';
 import { SetUserPermissionsDto } from './dto/set-user-permissions.dto';
 
-type CurrentUser = {
-  id: number;
-  email: string;
-  role: 'SUPERADMIN' | 'ADMIN' | 'EMPLOYEE';
-};
+const PERMISSION_SELECT = {
+  id: true,
+  key: true,
+  resource: true,
+  action: true,
+  group: true,
+  label: true,
+  order: true,
+  isSystem: true,
+} as const;
 
 @Injectable()
 export class PermissionsService {
   constructor(private readonly prisma: PrismaService) {}
 
+  private readonly hierarchy: Record<BaseRole, BaseRole[]> = {
+    [BaseRole.SUPERADMIN]: [BaseRole.ADMIN],
+    [BaseRole.ADMIN]: [BaseRole.EMPLOYEE],
+    [BaseRole.EMPLOYEE]: [],
+  };
+
   // ======================
-  // Permissions catalog
+  // Catálogo de permisos
   // ======================
+
   async findAll() {
     return this.prisma.permission.findMany({
       orderBy: [{ resource: 'asc' }, { action: 'asc' }],
-      select: {
-        id: true,
-        key: true,
-        resource: true,
-        action: true,
-        group: true,
-        label: true,
-        order: true,
-        isSystem: true,
-      },
+      select: PERMISSION_SELECT,
     });
   }
 
-  async create(dto: CreatePermissionDto, currentUser: CurrentUser) {
-    if (currentUser.role !== 'SUPERADMIN') {
-      throw new ForbiddenException('Solo SUPERADMIN puede crear permisos.');
-    }
+  async findOne(id: number) {
+    const permission = await this.prisma.permission.findUnique({
+      where: { id },
+      select: PERMISSION_SELECT,
+    });
+    if (!permission) throw new NotFoundException('Permiso no encontrado.');
+    return permission;
+  }
+
+  async create(dto: CreatePermissionDto, currentUser: CurrentUserJwt) {
+    this.assertIsSuperAdmin(currentUser);
 
     try {
       return await this.prisma.permission.create({
@@ -54,16 +67,7 @@ export class PermissionsService {
           order: dto.order,
           isSystem: true,
         },
-        select: {
-          id: true,
-          key: true,
-          resource: true,
-          action: true,
-          group: true,
-          label: true,
-          order: true,
-          isSystem: true,
-        },
+        select: PERMISSION_SELECT,
       });
     } catch (e: any) {
       if (e?.code === 'P2002') {
@@ -73,31 +77,47 @@ export class PermissionsService {
     }
   }
 
+  async update(
+    id: number,
+    dto: UpdatePermissionDto,
+    currentUser: CurrentUserJwt,
+  ) {
+    this.assertIsSuperAdmin(currentUser);
+    await this.findOne(id);
+
+    try {
+      return await this.prisma.permission.update({
+        where: { id },
+        data: dto,
+        select: PERMISSION_SELECT,
+      });
+    } catch (e: any) {
+      if (e?.code === 'P2002') {
+        throw new BadRequestException('Ya existe un permiso con ese key.');
+      }
+      throw e;
+    }
+  }
+
+  async remove(id: number, currentUser: CurrentUserJwt) {
+    this.assertIsSuperAdmin(currentUser);
+    await this.findOne(id);
+
+    await this.prisma.permission.delete({ where: { id } });
+    return { ok: true, deleted: id };
+  }
+
   // ======================
-  // User permissions
+  // Permisos por usuario
   // ======================
-  async listUserPermissions(userId: number) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { id: true },
-    });
-    if (!user) throw new NotFoundException('Usuario no encontrado.');
+
+  async listUserPermissions(userId: number, currentUser: CurrentUserJwt) {
+    await this.assertCanAccess(userId, currentUser);
 
     const rows = await this.prisma.userPermission.findMany({
       where: { userId },
       select: {
-        permission: {
-          select: {
-            id: true,
-            key: true,
-            resource: true,
-            action: true,
-            group: true,
-            label: true,
-            order: true,
-            isSystem: true,
-          },
-        },
+        permission: { select: PERMISSION_SELECT },
       },
       orderBy: { permissionId: 'asc' },
     });
@@ -105,42 +125,15 @@ export class PermissionsService {
     return rows.map((r) => r.permission);
   }
 
-  /**
-   * Reemplaza COMPLETO set de permisos del usuario.
-   */
   async setUserPermissions(
     userId: number,
     dto: SetUserPermissionsDto,
-    currentUser: CurrentUser,
+    currentUser: CurrentUserJwt,
   ) {
-    // Regla opcional: solo SUPERADMIN o el creador del usuario puede cambiar permisos.
-    // Ajústala a tu negocio.
-    const target = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { id: true, createdByUserId: true },
-    });
-    if (!target) throw new NotFoundException('Usuario no encontrado.');
+    await this.assertCanAccess(userId, currentUser);
 
-    if (
-      currentUser.role !== 'SUPERADMIN' &&
-      target.createdByUserId !== currentUser.id
-    ) {
-      throw new ForbiddenException(
-        'Solo SUPERADMIN o el creador puede modificar permisos del usuario.',
-      );
-    }
-
-    // validar IDs
-    const perms = await this.prisma.permission.findMany({
-      where: { id: { in: dto.permissionIds } },
-      select: { id: true },
-    });
-    const found = new Set(perms.map((p) => p.id));
-    const missing = dto.permissionIds.filter((id) => !found.has(id));
-    if (missing.length) {
-      throw new BadRequestException(
-        `Permisos no encontrados: ${missing.join(', ')}`,
-      );
+    if (dto.permissionIds.length) {
+      await this.assertPermissionsExist(dto.permissionIds);
     }
 
     await this.prisma.$transaction(async (tx) => {
@@ -161,36 +154,11 @@ export class PermissionsService {
 
   async addUserPermissions(
     userId: number,
-    dto: MutateUserPermissionsDto,
-    currentUser: CurrentUser,
+    dto: PermissionIdsDto,
+    currentUser: CurrentUserJwt,
   ) {
-    const target = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { id: true, createdByUserId: true },
-    });
-    if (!target) throw new NotFoundException('Usuario no encontrado.');
-
-    if (
-      currentUser.role !== 'SUPERADMIN' &&
-      target.createdByUserId !== currentUser.id
-    ) {
-      throw new ForbiddenException(
-        'Solo SUPERADMIN o el creador puede modificar permisos del usuario.',
-      );
-    }
-
-    // validar IDs
-    const perms = await this.prisma.permission.findMany({
-      where: { id: { in: dto.permissionIds } },
-      select: { id: true },
-    });
-    const found = new Set(perms.map((p) => p.id));
-    const missing = dto.permissionIds.filter((id) => !found.has(id));
-    if (missing.length) {
-      throw new BadRequestException(
-        `Permisos no encontrados: ${missing.join(', ')}`,
-      );
-    }
+    await this.assertCanAccess(userId, currentUser);
+    await this.assertPermissionsExist(dto.permissionIds);
 
     await this.prisma.userPermission.createMany({
       data: dto.permissionIds.map((permissionId) => ({ userId, permissionId })),
@@ -202,28 +170,61 @@ export class PermissionsService {
 
   async removeUserPermissions(
     userId: number,
-    dto: MutateUserPermissionsDto,
-    currentUser: CurrentUser,
+    dto: PermissionIdsDto,
+    currentUser: CurrentUserJwt,
   ) {
-    const target = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { id: true, createdByUserId: true },
-    });
-    if (!target) throw new NotFoundException('Usuario no encontrado.');
-
-    if (
-      currentUser.role !== 'SUPERADMIN' &&
-      target.createdByUserId !== currentUser.id
-    ) {
-      throw new ForbiddenException(
-        'Solo SUPERADMIN o el creador puede modificar permisos del usuario.',
-      );
-    }
+    await this.assertCanAccess(userId, currentUser);
 
     await this.prisma.userPermission.deleteMany({
       where: { userId, permissionId: { in: dto.permissionIds } },
     });
 
     return { ok: true, removed: dto.permissionIds };
+  }
+
+  // ======================
+  // Helpers privados
+  // ======================
+
+  private assertIsSuperAdmin(currentUser: CurrentUserJwt) {
+    if (currentUser.role !== BaseRole.SUPERADMIN) {
+      throw new ForbiddenException(
+        'Solo SUPERADMIN puede realizar esta acción.',
+      );
+    }
+  }
+
+  private async assertCanAccess(userId: number, currentUser: CurrentUserJwt) {
+    const target = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, role: true, createdByUserId: true },
+    });
+    if (!target) throw new NotFoundException('Usuario no encontrado.');
+
+    if (!this.hierarchy[currentUser.role].includes(target.role)) {
+      throw new ForbiddenException(
+        `Un ${currentUser.role} no puede gestionar permisos de un ${target.role}.`,
+      );
+    }
+
+    if (target.createdByUserId !== currentUser.id) {
+      throw new ForbiddenException(
+        'Solo el creador puede gestionar los permisos de este usuario.',
+      );
+    }
+  }
+
+  private async assertPermissionsExist(permissionIds: number[]) {
+    const perms = await this.prisma.permission.findMany({
+      where: { id: { in: permissionIds } },
+      select: { id: true },
+    });
+    const found = new Set(perms.map((p) => p.id));
+    const missing = permissionIds.filter((id) => !found.has(id));
+    if (missing.length) {
+      throw new BadRequestException(
+        `Permisos no encontrados: ${missing.join(', ')}`,
+      );
+    }
   }
 }

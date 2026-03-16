@@ -6,7 +6,8 @@ import {
   MinLength,
 } from 'class-validator';
 
-export enum CreateUserBaseRole {
+// SUPERADMIN no es creatable desde el exterior
+export enum CreatableRole {
   ADMIN = 'ADMIN',
   EMPLOYEE = 'EMPLOYEE',
 }
@@ -23,9 +24,10 @@ export class CreateUserDto {
   @IsNotEmpty()
   nombre: string;
 
+  @IsString()
   @MinLength(6)
   password: string;
 
-  @IsEnum(CreateUserBaseRole)
-  baseRole: CreateUserBaseRole;
+  @IsEnum(CreatableRole)
+  baseRole: CreatableRole;
 }

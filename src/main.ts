@@ -13,10 +13,6 @@ async function bootstrap() {
       const usedRSS = Math.round(memoryUsage.rss / 1024 / 1024);
       const usedHeap = Math.round(memoryUsage.heapUsed / 1024 / 1024);
 
-      console.log(
-        `[Memory Monitor] RSS: ${usedRSS}MB | Heap Used: ${usedHeap}MB`,
-      );
-
       if (usedRSS > 450) {
         logger.warn(
           '⚠️ ALERTA: Memoria crítica cerca del límite de Render (512MB)',

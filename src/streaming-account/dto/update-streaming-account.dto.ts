@@ -1,4 +1,12 @@
-import { IsInt, IsOptional, IsString, Min, MinLength } from 'class-validator';
+import {
+  IsEnum,
+  IsInt,
+  IsOptional,
+  IsString,
+  Min,
+  MinLength,
+} from 'class-validator';
+import { StreamingAccountStatus } from '@prisma/client';
 
 export class UpdateStreamingAccountDto {
   @IsOptional()
@@ -25,6 +33,11 @@ export class UpdateStreamingAccountDto {
   profilesTotal?: number;
 
   @IsOptional()
+  @IsInt()
+  @Min(1)
+  durationDays?: number; // ← nuevo
+
+  @IsOptional()
   @IsString()
   purchaseDate?: string;
 
@@ -41,6 +54,6 @@ export class UpdateStreamingAccountDto {
   notes?: string;
 
   @IsOptional()
-  @IsString()
-  status?: 'ACTIVE' | 'INACTIVE';
+  @IsEnum(StreamingAccountStatus) // ← usar enum de Prisma
+  status?: StreamingAccountStatus;
 }

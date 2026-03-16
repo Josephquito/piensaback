@@ -1,4 +1,4 @@
-import { IsString, MinLength } from 'class-validator';
+import { IsOptional, IsString, MinLength } from 'class-validator';
 
 export class CreateSupplierDto {
   @IsString()
@@ -6,6 +6,10 @@ export class CreateSupplierDto {
   name: string;
 
   @IsString()
-  @MinLength(2)
-  contact: string;
+  @MinLength(7)
+  contact: string; // número WhatsApp
+
+  @IsOptional()
+  @IsString()
+  notes?: string;
 }

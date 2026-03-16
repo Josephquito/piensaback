@@ -1,64 +1,117 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { BaseRole, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { CurrentUserJwt } from '../common/types/current-user-jwt.type';
 import { CreateSupplierDto } from './dto/create-supplier.dto';
 import { UpdateSupplierDto } from './dto/update-supplier.dto';
-import { Prisma } from '@prisma/client';
+import {
+  AdjustBalanceDto,
+  BalanceMovementType,
+} from './dto/adjust-balance.dto';
 
-type ReqUser = {
-  id: number;
-  email: string;
-  role: 'SUPERADMIN' | 'ADMIN' | 'EMPLOYEE';
-  permissions: string[];
-};
+const SUPPLIER_SELECT = {
+  id: true,
+  name: true,
+  contact: true,
+  balance: true,
+  notes: true,
+  createdAt: true,
+  updatedAt: true,
+} as const;
 
 @Injectable()
 export class SuppliersService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService) {}
 
-  async create(dto: CreateSupplierDto, _actor: ReqUser, companyId: number) {
+  // =========================
+  // Helpers
+  // =========================
+  private assertNotEmployee(actor: CurrentUserJwt) {
+    if (actor.role === BaseRole.EMPLOYEE) {
+      throw new ForbiddenException('EMPLOYEE no puede gestionar proveedores.');
+    }
+  }
+
+  private async findAndAssert(id: number, companyId: number) {
+    const supplier = await this.prisma.supplier.findFirst({
+      where: { id, companyId },
+    });
+    if (!supplier) throw new NotFoundException('Proveedor no encontrado.');
+    return supplier;
+  }
+
+  // =========================
+  // CRUD
+  // =========================
+  async findAll(companyId: number) {
+    return this.prisma.supplier.findMany({
+      where: { companyId },
+      select: SUPPLIER_SELECT,
+      orderBy: { name: 'asc' },
+    });
+  }
+
+  async findOne(id: number, companyId: number) {
+    const supplier = await this.prisma.supplier.findFirst({
+      where: { id, companyId },
+      select: {
+        ...SUPPLIER_SELECT,
+        _count: { select: { accounts: true } },
+      },
+    });
+    if (!supplier) throw new NotFoundException('Proveedor no encontrado.');
+    return supplier;
+  }
+
+  async create(
+    dto: CreateSupplierDto,
+    companyId: number,
+    actor: CurrentUserJwt,
+  ) {
+    this.assertNotEmployee(actor);
+
     try {
       return await this.prisma.supplier.create({
         data: {
           companyId,
           name: dto.name,
           contact: dto.contact,
+          notes: dto.notes,
         },
+        select: SUPPLIER_SELECT,
       });
     } catch (e: any) {
-      // unique (companyId,name)
-      throw new BadRequestException(
-        'Ya existe un proveedor con ese nombre en esta empresa.',
-      );
+      if (e?.code === 'P2002') {
+        throw new BadRequestException(
+          'Ya existe un proveedor con ese nombre en esta empresa.',
+        );
+      }
+      throw e;
     }
-  }
-
-  async findAll(_actor: ReqUser, companyId: number) {
-    return this.prisma.supplier.findMany({
-      where: { companyId },
-      orderBy: { createdAt: 'desc' },
-    });
-  }
-
-  async findOne(id: number, _actor: ReqUser, companyId: number) {
-    const supplier = await this.prisma.supplier.findFirst({
-      where: { id, companyId },
-    });
-    if (!supplier) throw new NotFoundException('Proveedor no existe.');
-    return supplier;
   }
 
   async update(
     id: number,
     dto: UpdateSupplierDto,
-    _actor: ReqUser,
     companyId: number,
+    actor: CurrentUserJwt,
   ) {
-    // asegura pertenencia
-    await this.findOne(id, _actor, companyId);
+    this.assertNotEmployee(actor);
+    await this.findAndAssert(id, companyId);
+
+    const hasChanges =
+      dto.name !== undefined ||
+      dto.contact !== undefined ||
+      dto.notes !== undefined;
+
+    if (!hasChanges) {
+      throw new BadRequestException('No hay campos para actualizar.');
+    }
 
     try {
       return await this.prisma.supplier.update({
@@ -66,44 +119,71 @@ export class SuppliersService {
         data: {
           ...(dto.name !== undefined ? { name: dto.name } : {}),
           ...(dto.contact !== undefined ? { contact: dto.contact } : {}),
+          ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
         },
+        select: SUPPLIER_SELECT,
       });
     } catch (e: any) {
-      throw new BadRequestException('No se pudo actualizar el proveedor.');
+      if (e?.code === 'P2002') {
+        throw new BadRequestException(
+          'Ya existe un proveedor con ese nombre en esta empresa.',
+        );
+      }
+      throw e;
     }
   }
 
-  async remove(id: number, _actor: ReqUser, companyId: number) {
-    // asegura pertenencia
-    await this.findOne(id, _actor, companyId);
+  async remove(id: number, companyId: number, actor: CurrentUserJwt) {
+    this.assertNotEmployee(actor);
+    await this.findAndAssert(id, companyId);
 
     try {
       await this.prisma.supplier.delete({ where: { id } });
-      return { ok: true };
+      return { ok: true, deletedId: id };
     } catch (e: any) {
-      // Si el supplier tiene relaciones con tablas que tienen FK Restrict, caerá aquí:
       if (e instanceof Prisma.PrismaClientKnownRequestError) {
-        // P2003: Foreign key constraint failed
         if (e.code === 'P2003') {
           throw new BadRequestException(
-            'No se puede eliminar: el proveedor tiene relaciones registradas.',
+            'No se puede eliminar: el proveedor tiene cuentas asociadas.',
           );
         }
       }
-      throw new BadRequestException('No se pudo eliminar el proveedor.');
+      throw e;
     }
   }
 
-  async accountsBySupplier(
-    supplierId: number,
-    _actor: ReqUser,
+  // =========================
+  // Balance
+  // =========================
+  async adjustBalance(
+    id: number,
+    dto: AdjustBalanceDto,
     companyId: number,
+    actor: CurrentUserJwt,
   ) {
-    // asegura pertenencia
-    await this.findOne(supplierId, _actor, companyId);
+    this.assertNotEmployee(actor);
+    const supplier = await this.findAndAssert(id, companyId);
+
+    const delta =
+      dto.type === BalanceMovementType.DEPOSIT ? dto.amount : -dto.amount;
+
+    const newBalance = Number(supplier.balance) + delta;
+
+    return this.prisma.supplier.update({
+      where: { id },
+      data: { balance: newBalance },
+      select: { id: true, name: true, balance: true },
+    });
+  }
+
+  // =========================
+  // Cuentas del proveedor
+  // =========================
+  async accountsBySupplier(id: number, companyId: number) {
+    await this.findAndAssert(id, companyId);
 
     return this.prisma.streamingAccount.findMany({
-      where: { companyId, supplierId },
+      where: { companyId, supplierId: id },
       select: {
         id: true,
         email: true,
@@ -111,7 +191,7 @@ export class SuppliersService {
         cutoffDate: true,
         status: true,
         totalCost: true,
-        platformId: true,
+        platform: { select: { id: true, name: true } },
       },
       orderBy: { purchaseDate: 'desc' },
     });

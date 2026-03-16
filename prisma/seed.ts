@@ -58,15 +58,6 @@ async function grantUserPermissions(userId: number, permissionIds: number[]) {
   });
 }
 
-async function setRoleDefaults(role: BaseRole, permissionIds: number[]) {
-  // idempotente: borra y vuelve a insertar
-  await prisma.rolePermission.deleteMany({ where: { role } });
-  await prisma.rolePermission.createMany({
-    data: permissionIds.map((permissionId) => ({ role, permissionId })),
-    skipDuplicates: true,
-  });
-}
-
 async function main() {
   /**
    * ======================================================
@@ -500,17 +491,6 @@ async function main() {
   ];
 
   const employeeDefaultKeys = ['USERS:READ'];
-
-  function idsFromKeys(keys: string[]) {
-    return keys.map((k) => {
-      const id = byKey.get(k);
-      if (!id) throw new Error(`Seed error: no existe permiso con key ${k}`);
-      return id;
-    });
-  }
-
-  await setRoleDefaults(BaseRole.ADMIN, idsFromKeys(adminDefaultKeys));
-  await setRoleDefaults(BaseRole.EMPLOYEE, idsFromKeys(employeeDefaultKeys));
 
   console.log('✅ Seed ejecutado correctamente');
   console.log('SUPERADMIN:', email, password);

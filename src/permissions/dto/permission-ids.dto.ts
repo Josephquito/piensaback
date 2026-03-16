@@ -1,6 +1,6 @@
 import { ArrayNotEmpty, IsArray, IsInt, Min } from 'class-validator';
 
-export class MutateUserPermissionsDto {
+export class PermissionIdsDto {
   @IsArray()
   @ArrayNotEmpty()
   @IsInt({ each: true })

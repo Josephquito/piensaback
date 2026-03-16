@@ -1,217 +1,232 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
+import { KardexRefType, KardexType, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
-import { KardexRefType, KardexType } from '@prisma/client';
-import { Prisma } from '@prisma/client';
+
+type TxClient = Prisma.TransactionClient;
 
 @Injectable()
 export class KardexService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService) {}
 
-  /**
-   * Asegura que exista el CostItem para (companyId, platformId)
-   */
-  async ensureItem(companyId: number, platformId: number) {
-    const existing = await this.prisma.costItem.findUnique({
+  // =========================
+  // Escritura
+  // =========================
+  async registerIn(
+    params: {
+      companyId: number;
+      platformId: number;
+      qty: number;
+      unitCost: Prisma.Decimal;
+      refType: KardexRefType;
+      accountId?: number;
+    },
+    tx?: TxClient,
+  ) {
+    const { companyId, platformId, qty, unitCost, refType, accountId } = params;
+    const client = tx ?? this.prisma;
+
+    if (!Number.isInteger(qty) || qty <= 0)
+      throw new BadRequestException('qty inválido para kardex IN.');
+    if (unitCost.lessThan(0))
+      throw new BadRequestException('unitCost inválido para kardex IN.');
+
+    const item = await client.costItem.upsert({
       where: { companyId_platformId: { companyId, platformId } },
-    });
-    if (existing) return existing;
-
-    // Crear con stock 0 y avgCost 0
-    return this.prisma.costItem.create({
-      data: {
+      update: {},
+      create: {
         companyId,
         platformId,
-        unit: 'PROFILE',
+        unit: 'PROFILE_DAY',
         stock: 0,
-        // avgCost lo seteamos a 0
         avgCost: new Prisma.Decimal(0),
       },
     });
-  }
 
-  /**
-   * Registra movimiento IN (entrada de perfiles) y recalcula promedio ponderado.
-   * unitCost viene calculado (totalCost / qty) desde el módulo de cuentas.
-   */
-  async registerIn(params: {
-    companyId: number;
-    platformId: number;
-    qty: number;
-    unitCost: Prisma.Decimal;
-    refType: KardexRefType;
-    accountId?: number;
-  }) {
-    const { companyId, platformId, qty, unitCost, refType, accountId } = params;
-    if (!Number.isInteger(qty) || qty <= 0) {
-      throw new BadRequestException('qty inválido para kardex IN.');
-    }
-    if (unitCost.lessThan(0)) {
-      throw new BadRequestException('unitCost inválido para kardex IN.');
-    }
+    const oldStock = item.stock;
+    const oldAvg = item.avgCost;
+    const inTotal = unitCost.mul(qty);
+    const newStock = oldStock + qty;
 
-    // Transacción para evitar carreras
-    return this.prisma.$transaction(async (tx) => {
-      const item = await tx.costItem.upsert({
-        where: { companyId_platformId: { companyId, platformId } },
-        update: {},
-        create: {
-          companyId,
-          platformId,
-          unit: 'PROFILE',
-          stock: 0,
-          avgCost: new Prisma.Decimal(0),
-        },
-      });
+    const newAvg =
+      newStock === 0
+        ? new Prisma.Decimal(0)
+        : oldAvg.mul(oldStock).add(inTotal).div(newStock);
 
-      const oldStock = item.stock;
-      const oldAvg = item.avgCost;
-
-      const inTotal = unitCost.mul(qty);
-      const newStock = oldStock + qty;
-
-      // newAvg = (oldStock*oldAvg + qty*unitCost) / newStock
-      const newAvg =
-        newStock === 0
-          ? new Prisma.Decimal(0)
-          : oldAvg.mul(oldStock).add(inTotal).div(newStock);
-
-      const updatedItem = await tx.costItem.update({
-        where: { id: item.id },
-        data: {
-          stock: newStock,
-          avgCost: newAvg,
-        },
-      });
-
-      const movement = await tx.kardexMovement.create({
-        data: {
-          companyId,
-          itemId: item.id,
-          type: KardexType.IN,
-          refType,
-          qty,
-          unitCost,
-          totalCost: inTotal,
-          stockAfter: newStock,
-          avgCostAfter: newAvg,
-          accountId: accountId ?? null,
-          saleId: null,
-        },
-      });
-
-      return { item: updatedItem, movement };
+    const updatedItem = await client.costItem.update({
+      where: { id: item.id },
+      data: { stock: newStock, avgCost: newAvg },
     });
+
+    const movement = await client.kardexMovement.create({
+      data: {
+        companyId,
+        itemId: item.id,
+        type: KardexType.IN,
+        refType,
+        qty,
+        unitCost,
+        totalCost: inTotal,
+        stockAfter: newStock,
+        avgCostAfter: newAvg,
+        accountId: accountId ?? null,
+        saleId: null,
+      },
+    });
+
+    return { item: updatedItem, movement };
   }
 
-  /**
-   * Registra movimiento OUT (venta) a costo promedio actual.
-   * Retorna el unitCost usado (avgCost vigente) para guardarlo en la venta.
-   */
-  async registerOut(params: {
-    companyId: number;
-    platformId: number;
-    qty: number; // normalmente 1
-    refType: KardexRefType;
-    accountId?: number;
-    saleId?: number;
-  }) {
+  async registerOut(
+    params: {
+      companyId: number;
+      platformId: number;
+      qty: number;
+      refType: KardexRefType;
+      accountId?: number;
+      saleId?: number;
+    },
+    tx?: TxClient,
+  ) {
     const { companyId, platformId, qty, refType, accountId, saleId } = params;
-    if (!Number.isInteger(qty) || qty <= 0) {
+    const client = tx ?? this.prisma;
+
+    if (!Number.isInteger(qty) || qty <= 0)
       throw new BadRequestException('qty inválido para kardex OUT.');
-    }
 
-    return this.prisma.$transaction(async (tx) => {
-      const item = await tx.costItem.findUnique({
-        where: { companyId_platformId: { companyId, platformId } },
-      });
-      if (!item) throw new BadRequestException('CostItem no existe.');
-      if (item.stock < qty) {
-        throw new BadRequestException('Stock insuficiente para la salida.');
-      }
+    const item = await client.costItem.findUnique({
+      where: { companyId_platformId: { companyId, platformId } },
+    });
+    if (!item) throw new BadRequestException('CostItem no existe.');
+    if (item.stock < qty)
+      throw new BadRequestException('Stock insuficiente para la salida.');
 
-      const unitCost = item.avgCost;
-      const outTotal = unitCost.mul(qty);
-      const newStock = item.stock - qty;
+    const unitCost = item.avgCost;
+    const outTotal = unitCost.mul(qty);
+    const newStock = item.stock - qty;
 
-      // Promedio no cambia en salida
-      const newAvg = item.avgCost;
+    const updatedItem = await client.costItem.update({
+      where: { id: item.id },
+      data: { stock: newStock },
+    });
 
-      const updatedItem = await tx.costItem.update({
-        where: { id: item.id },
-        data: { stock: newStock, avgCost: newAvg },
-      });
+    const movement = await client.kardexMovement.create({
+      data: {
+        companyId,
+        itemId: item.id,
+        type: KardexType.OUT,
+        refType,
+        qty,
+        unitCost,
+        totalCost: outTotal,
+        stockAfter: newStock,
+        avgCostAfter: item.avgCost,
+        accountId: accountId ?? null,
+        saleId: saleId ?? null,
+      },
+    });
 
-      const movement = await tx.kardexMovement.create({
-        data: {
-          companyId,
-          itemId: item.id,
-          type: KardexType.OUT,
-          refType,
-          qty,
-          unitCost,
-          totalCost: outTotal,
-          stockAfter: newStock,
-          avgCostAfter: newAvg,
-          accountId: accountId ?? null,
-          saleId: saleId ?? null,
-        },
-      });
+    return { item: updatedItem, movement, unitCost };
+  }
 
-      return { item: updatedItem, movement, unitCost };
+  async registerAdjustOut(
+    params: {
+      companyId: number;
+      platformId: number;
+      qty: number;
+      refType: KardexRefType;
+      accountId?: number;
+    },
+    tx?: TxClient,
+  ) {
+    const { companyId, platformId, qty, refType, accountId } = params;
+    const client = tx ?? this.prisma;
+
+    if (!Number.isInteger(qty) || qty <= 0)
+      throw new BadRequestException('qty inválido para kardex ADJUST OUT.');
+
+    const item = await client.costItem.findUnique({
+      where: { companyId_platformId: { companyId, platformId } },
+    });
+    if (!item) throw new BadRequestException('CostItem no existe.');
+    if (item.stock < qty)
+      throw new BadRequestException('Stock insuficiente para el ajuste.');
+
+    const unitCost = item.avgCost;
+    const totalCost = unitCost.mul(qty);
+    const newStock = item.stock - qty;
+
+    const updatedItem = await client.costItem.update({
+      where: { id: item.id },
+      data: { stock: newStock },
+    });
+
+    const movement = await client.kardexMovement.create({
+      data: {
+        companyId,
+        itemId: item.id,
+        type: KardexType.ADJUST,
+        refType,
+        qty,
+        unitCost,
+        totalCost,
+        stockAfter: newStock,
+        avgCostAfter: item.avgCost,
+        accountId: accountId ?? null,
+        saleId: null,
+      },
+    });
+
+    return { item: updatedItem, movement, unitCost };
+  }
+
+  // =========================
+  // Lectura
+  // =========================
+  async getItems(companyId: number) {
+    return this.prisma.costItem.findMany({
+      where: { companyId },
+      select: {
+        id: true,
+        unit: true,
+        stock: true,
+        avgCost: true,
+        platform: { select: { id: true, name: true, active: true } },
+        updatedAt: true,
+      },
+      orderBy: { platform: { name: 'asc' } },
     });
   }
 
-  /**
-   * Ajuste OUT (por inactivación o reducción de perfilesTotal).
-   * Igual que OUT: baja stock y usa avgCost vigente.
-   */
-  async registerAdjustOut(params: {
-    companyId: number;
-    platformId: number;
-    qty: number;
-    refType: KardexRefType;
-    accountId?: number;
-  }) {
-    const { companyId, platformId, qty, refType, accountId } = params;
-    if (!Number.isInteger(qty) || qty <= 0) {
-      throw new BadRequestException('qty inválido para kardex ADJUST OUT.');
-    }
+  async getMovements(
+    companyId: number,
+    params: { platformId?: number; take?: number; skip?: number },
+  ) {
+    const { platformId, take = 50, skip = 0 } = params;
 
-    return this.prisma.$transaction(async (tx) => {
-      const item = await tx.costItem.findUnique({
-        where: { companyId_platformId: { companyId, platformId } },
-      });
-      if (!item) throw new BadRequestException('CostItem no existe.');
-      if (item.stock < qty) {
-        throw new BadRequestException('Stock insuficiente para el ajuste.');
-      }
-
-      const unitCost = item.avgCost;
-      const totalCost = unitCost.mul(qty);
-      const newStock = item.stock - qty;
-
-      const updatedItem = await tx.costItem.update({
-        where: { id: item.id },
-        data: { stock: newStock },
-      });
-
-      const movement = await tx.kardexMovement.create({
-        data: {
-          companyId,
-          itemId: item.id,
-          type: KardexType.ADJUST,
-          refType,
-          qty,
-          unitCost,
-          totalCost,
-          stockAfter: newStock,
-          avgCostAfter: item.avgCost,
-          accountId: accountId ?? null,
-          saleId: null,
+    return this.prisma.kardexMovement.findMany({
+      where: {
+        companyId,
+        ...(platformId ? { item: { platformId } } : {}),
+      },
+      select: {
+        id: true,
+        type: true,
+        refType: true,
+        qty: true,
+        unitCost: true,
+        totalCost: true,
+        stockAfter: true,
+        avgCostAfter: true,
+        createdAt: true,
+        item: {
+          select: { platform: { select: { id: true, name: true } } },
         },
-      });
-
-      return { item: updatedItem, movement, unitCost };
+        account: { select: { id: true, email: true } },
+        sale: { select: { id: true, salePrice: true, daysAssigned: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+      take,
+      skip,
     });
   }
 }

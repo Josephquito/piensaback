@@ -8,16 +8,19 @@ import {
 } from 'class-validator';
 import { PermissionAction, PermissionResource } from '@prisma/client';
 
-export class CreatePermissionDto {
+export class UpdatePermissionDto {
+  @IsOptional()
   @IsEnum(PermissionResource)
-  resource: PermissionResource;
+  resource?: PermissionResource;
 
+  @IsOptional()
   @IsEnum(PermissionAction)
-  action: PermissionAction;
+  action?: PermissionAction;
 
+  @IsOptional()
   @IsString()
   @MaxLength(120)
-  key: string;
+  key?: string;
 
   @IsOptional()
   @IsString()

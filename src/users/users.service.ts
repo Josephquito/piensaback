@@ -8,19 +8,13 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { Prisma, UserStatus } from '@prisma/client';
+import { CurrentUserJwt } from '../common/types/current-user-jwt.type';
 import * as bcrypt from 'bcrypt';
-
-type BaseRoleName = 'SUPERADMIN' | 'ADMIN' | 'EMPLOYEE';
-
-type CurrentUserJwt = {
-  id: number;
-  role: BaseRoleName; // viene del JWT (pero vamos a validar con DB)
-};
 
 type Actor = {
   id: number;
-  role: BaseRoleName;
-  createdByUserId: number | null; // para EMPLOYEE apunta al ADMIN creador
+  role: 'SUPERADMIN' | 'ADMIN' | 'EMPLOYEE';
+  createdByUserId: number | null;
 };
 
 @Injectable()
@@ -46,27 +40,26 @@ export class UsersService {
   }
 
   // =======================
-  // Actor loader (DB source of truth)
+  // Actor loader
   // =======================
   private async getActor(currentUser: CurrentUserJwt): Promise<Actor> {
     const actor = await this.prisma.user.findUnique({
       where: { id: currentUser.id },
       select: { id: true, role: true, createdByUserId: true },
     });
-
     if (!actor) throw new ForbiddenException('Usuario actual inválido.');
-
-    // Si tu tabla role es enum/string, Prisma lo tipará. Aquí lo tratamos como BaseRoleName.
     return actor as Actor;
   }
 
   // =======================
   // Scope rules
   // =======================
-  private assertCanCreateRole(actor: Actor, baseRole: BaseRoleName) {
+  private assertCanCreateRole(actor: Actor, baseRole: string) {
     if (actor.role === 'SUPERADMIN') {
       if (baseRole !== 'ADMIN') {
-        throw new ForbiddenException('No tienes permisos para crear EMPLOYEE.');
+        throw new ForbiddenException(
+          'SUPERADMIN solo puede crear usuarios ADMIN.',
+        );
       }
       return;
     }
@@ -74,47 +67,24 @@ export class UsersService {
     if (actor.role === 'ADMIN') {
       if (baseRole !== 'EMPLOYEE') {
         throw new ForbiddenException(
-          'No tienes permisos para crear SUPERADMIN o ADMIN.',
+          'ADMIN solo puede crear usuarios EMPLOYEE.',
         );
       }
       return;
     }
 
-    // EMPLOYEE
-    if (actor.role === 'EMPLOYEE') {
-      if (baseRole !== 'EMPLOYEE') {
-        throw new ForbiddenException('Solo puedes crear usuarios EMPLOYEE.');
-      }
-      if (!actor.createdByUserId) {
-        throw new ForbiddenException(
-          'EMPLOYEE inválido: no tiene createdByUserId (ADMIN dueño).',
-        );
-      }
-      return;
-    }
+    // EMPLOYEE no puede crear usuarios
+    throw new ForbiddenException('No tienes permisos para crear usuarios.');
   }
 
-  /**
-   * Define quién será el createdByUserId del usuario nuevo:
-   * - SUPERADMIN creando ADMIN => createdByUserId = superadmin.id
-   * - ADMIN creando EMPLOYEE => createdByUserId = admin.id
-   * - EMPLOYEE creando EMPLOYEE => createdByUserId = actor.createdByUserId (el ADMIN dueño)
-   */
   private createdByForNewUser(actor: Actor): number {
     if (actor.role === 'SUPERADMIN') return actor.id;
     if (actor.role === 'ADMIN') return actor.id;
-
-    // EMPLOYEE
-    if (!actor.createdByUserId) {
-      throw new ForbiddenException(
-        'EMPLOYEE inválido: no tiene createdByUserId (ADMIN dueño).',
-      );
-    }
-    return actor.createdByUserId;
+    throw new ForbiddenException('No tienes permisos para crear usuarios.');
   }
 
   private async assertCanReadTarget(targetId: number, actor: Actor) {
-    if (targetId === actor.id) return; // self siempre
+    if (targetId === actor.id) return;
 
     const target = await this.prisma.user.findUnique({
       where: { id: targetId },
@@ -123,7 +93,6 @@ export class UsersService {
     if (!target) throw new NotFoundException('Usuario no encontrado.');
 
     if (actor.role === 'SUPERADMIN') {
-      // solo ADMIN creados por él
       if (target.role !== 'ADMIN' || target.createdByUserId !== actor.id) {
         throw new ForbiddenException(
           'No tienes permisos para ver este usuario.',
@@ -133,7 +102,6 @@ export class UsersService {
     }
 
     if (actor.role === 'ADMIN') {
-      // solo EMPLOYEE creados por él
       if (target.role !== 'EMPLOYEE' || target.createdByUserId !== actor.id) {
         throw new ForbiddenException(
           'No tienes permisos para ver este usuario.',
@@ -142,10 +110,9 @@ export class UsersService {
       return;
     }
 
-    // EMPLOYEE: solo EMPLOYEE con mismo createdByUserId (mismo ADMIN dueño)
-    if (!actor.createdByUserId) {
+    // EMPLOYEE: solo ve otros EMPLOYEE del mismo ADMIN
+    if (!actor.createdByUserId)
       throw new ForbiddenException('EMPLOYEE inválido.');
-    }
     if (
       target.role !== 'EMPLOYEE' ||
       target.createdByUserId !== actor.createdByUserId
@@ -154,14 +121,13 @@ export class UsersService {
     }
   }
 
-  private async assertCanUpdateTarget(targetId: number, actor: Actor) {
-    // mismas reglas que READ
-    await this.assertCanReadTarget(targetId, actor);
-  }
-
   private async assertCanDeleteTarget(targetId: number, actor: Actor) {
     if (targetId === actor.id) {
       throw new ForbiddenException('No puedes eliminar tu propio usuario.');
+    }
+
+    if (actor.role === 'SUPERADMIN') {
+      throw new ForbiddenException('SUPERADMIN no puede eliminar usuarios.');
     }
 
     const target = await this.prisma.user.findUnique({
@@ -170,15 +136,10 @@ export class UsersService {
     });
     if (!target) throw new NotFoundException('Usuario no encontrado.');
 
-    // Nunca borrar ADMIN/SUPERADMIN
     if (target.role !== 'EMPLOYEE') {
       throw new ForbiddenException(
         'Solo se permite eliminar usuarios EMPLOYEE.',
       );
-    }
-
-    if (actor.role === 'SUPERADMIN') {
-      throw new ForbiddenException('SUPERADMIN no puede eliminar usuarios.');
     }
 
     if (actor.role === 'ADMIN') {
@@ -190,22 +151,16 @@ export class UsersService {
       return;
     }
 
-    // EMPLOYEE
-    if (!actor.createdByUserId)
-      throw new ForbiddenException('EMPLOYEE inválido.');
-
-    if (target.createdByUserId !== actor.createdByUserId) {
-      throw new ForbiddenException(
-        'Solo puedes eliminar EMPLOYEE con tu mismo createdByUserId.',
-      );
-    }
+    throw new ForbiddenException('No tienes permisos para eliminar usuarios.');
   }
 
   // =======================
-  // CREATE USER
+  // CREATE
   // =======================
   async create(dto: CreateUserDto, currentUser: CurrentUserJwt) {
     const actor = await this.getActor(currentUser);
+
+    this.assertCanCreateRole(actor, dto.baseRole);
 
     const exists = await this.prisma.user.findUnique({
       where: { email: dto.email },
@@ -213,98 +168,58 @@ export class UsersService {
     });
     if (exists) throw new BadRequestException('Email ya registrado.');
 
-    this.assertCanCreateRole(actor, dto.baseRole);
-
     const passwordHash = await bcrypt.hash(dto.password, 10);
-
     const createdByUserId = this.createdByForNewUser(actor);
 
-    const user = await this.prisma.$transaction(async (tx) => {
-      // 1) crear usuario
-      const created = await tx.user.create({
-        data: {
-          email: dto.email,
-          phone: dto.phone,
-          nombre: dto.nombre,
-          passwordHash,
-          status: UserStatus.ACTIVE,
-          role: dto.baseRole,
-          createdByUserId,
-        },
-        select: this.selectUserPublic(),
-      });
-
-      // 2) traer defaults del rol
-      const roleDefaults = await tx.rolePermission.findMany({
-        where: { role: dto.baseRole },
-        select: { permissionId: true },
-      });
-
-      // 3) asignar al usuario (si hay)
-      if (roleDefaults.length) {
-        await tx.userPermission.createMany({
-          data: roleDefaults.map((r) => ({
-            userId: created.id,
-            permissionId: r.permissionId,
-          })),
-          skipDuplicates: true,
-        });
-      }
-
-      return created;
+    return this.prisma.user.create({
+      data: {
+        email: dto.email,
+        phone: dto.phone,
+        nombre: dto.nombre,
+        passwordHash,
+        status: UserStatus.ACTIVE,
+        role: dto.baseRole,
+        createdByUserId,
+      },
+      select: this.selectUserPublic(),
     });
-
-    return user;
   }
 
   // =======================
-  // LIST USERS (según scope)
+  // LIST
   // =======================
   async findAll(currentUser: CurrentUserJwt) {
     const actor = await this.getActor(currentUser);
 
     if (actor.role === 'SUPERADMIN') {
-      // solo ADMIN creados por él
       return this.prisma.user.findMany({
-        where: {
-          role: 'ADMIN',
-          createdByUserId: actor.id,
-        },
+        where: { role: 'ADMIN', createdByUserId: actor.id },
         select: this.selectUserPublic(),
         orderBy: { createdAt: 'desc' },
       });
     }
 
     if (actor.role === 'ADMIN') {
-      // solo EMPLOYEE creados por él
       return this.prisma.user.findMany({
-        where: {
-          role: 'EMPLOYEE',
-          createdByUserId: actor.id,
-        },
+        where: { role: 'EMPLOYEE', createdByUserId: actor.id },
         select: this.selectUserPublic(),
         orderBy: { createdAt: 'desc' },
       });
     }
 
-    // EMPLOYEE: otros EMPLOYEE del mismo ADMIN dueño
+    // EMPLOYEE: otros EMPLOYEE del mismo ADMIN
     if (!actor.createdByUserId)
       throw new ForbiddenException('EMPLOYEE inválido.');
 
     return this.prisma.user.findMany({
-      where: {
-        role: 'EMPLOYEE',
-        createdByUserId: actor.createdByUserId,
-        // si quieres excluirse a sí mismo:
-        // id: { not: actor.id },
-      },
+      where: { role: 'EMPLOYEE', createdByUserId: actor.createdByUserId },
       select: this.selectUserPublic(),
       orderBy: { createdAt: 'desc' },
     });
   }
 
   // =======================
-  // FIND ONE (scope)
+  // FIND ONE
   // =======================
   async findOne(id: number, currentUser: CurrentUserJwt) {
     const actor = await this.getActor(currentUser);
@@ -315,32 +230,24 @@ export class UsersService {
       select: this.selectUserPublic(),
     });
     if (!user) throw new NotFoundException('Usuario no encontrado.');
-
     return user;
   }
 
   async me(userId: number) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: this.selectUserPublic(), // aquí viene nombre, phone, status, role...
+      select: this.selectUserPublic(),
     });
-
     if (!user) throw new NotFoundException('Usuario no encontrado.');
     return user;
   }
 
   // =======================
-  // UPDATE (scope) - email NO
+  // UPDATE
   // =======================
   async update(id: number, dto: UpdateUserDto, currentUser: CurrentUserJwt) {
     const actor = await this.getActor(currentUser);
-    await this.assertCanUpdateTarget(id, actor);
-
-    const target = await this.prisma.user.findUnique({
-      where: { id },
-      select: { id: true, role: true, status: true },
-    });
-    if (!target) throw new NotFoundException('Usuario no encontrado.');
+    await this.assertCanReadTarget(id, actor);
 
     if ((dto as any).email) {
       throw new BadRequestException('No se puede modificar el email.');
@@ -348,55 +255,31 @@ export class UsersService {
 
     const isSelf = id === actor.id;
 
-    // Status rules:
-    // - nadie cambia su propio status (tu regla actual)
-    // - EMPLOYEE puede cambiar status SOLO de otros EMPLOYEE dentro de su scope
-    if (typeof dto.status !== 'undefined') {
-      if (isSelf) {
-        throw new ForbiddenException('No puedes cambiar tu propio status.');
-      }
-
-      if (actor.role === 'EMPLOYEE') {
-        const targetMini = await this.prisma.user.findUnique({
-          where: { id },
-          select: { id: true, role: true, createdByUserId: true },
-        });
-        if (!targetMini) throw new NotFoundException('Usuario no encontrado.');
-
-        if (targetMini.role !== 'EMPLOYEE') {
-          throw new ForbiddenException(
-            'EMPLOYEE solo puede cambiar status de usuarios EMPLOYEE.',
-          );
-        }
-
-        if (
-          !actor.createdByUserId ||
-          targetMini.createdByUserId !== actor.createdByUserId
-        ) {
-          throw new ForbiddenException(
-            'EMPLOYEE solo puede cambiar status de EMPLOYEE con el mismo createdByUserId.',
-          );
-        }
-      }
+    if (typeof dto.status !== 'undefined' && isSelf) {
+      throw new ForbiddenException('No puedes cambiar tu propio status.');
     }
 
+    const target = await this.prisma.user.findUnique({
+      where: { id },
+      select: { id: true, role: true, status: true },
+    });
+    if (!target) throw new NotFoundException('Usuario no encontrado.');
+
     const data: Prisma.UserUpdateInput = {
-      nombre: dto.nombre,
-      phone: dto.phone,
+      ...(dto.nombre ? { nombre: dto.nombre } : {}),
+      ...(dto.phone ? { phone: dto.phone } : {}),
       ...(typeof dto.status !== 'undefined' ? { status: dto.status } : {}),
     };
 
     if (dto.password) {
-      (data as any).passwordHash = await bcrypt.hash(dto.password, 10);
+      data.passwordHash = await bcrypt.hash(dto.password, 10);
     }
 
-    // Si quieres conservar tu lógica de cascada cuando un ADMIN cambia status:
     const willChangeStatus =
       typeof dto.status !== 'undefined' && dto.status !== target.status;
 
-    const isAdminBase = target.role === 'ADMIN';
-
-    if (!willChangeStatus || !isAdminBase) {
+    // Cascada solo aplica si el target es ADMIN y cambia su status
+    if (!willChangeStatus || target.role !== 'ADMIN') {
       return this.prisma.user.update({
         where: { id },
         data,
@@ -404,8 +287,6 @@ export class UsersService {
       });
     }
 
-    // OJO: según tus limitantes, ADMIN no puede editar otros ADMIN
-    // y SUPERADMIN sí puede editar solo sus ADMIN. Esta cascada solo aplica si lo permites.
     return this.prisma.$transaction(async (tx) => {
       const updated = await tx.user.update({
         where: { id },
@@ -415,14 +296,8 @@ export class UsersService {
 
       if (dto.status === UserStatus.INACTIVE) {
         await tx.user.updateMany({
-          where: {
-            createdByUserId: id,
-            status: UserStatus.ACTIVE,
-          },
-          data: {
-            status: UserStatus.INACTIVE,
-            cascadeInactivatedByUserId: id,
-          },
+          where: { createdByUserId: id, status: UserStatus.ACTIVE },
+          data: { status: UserStatus.INACTIVE, cascadeInactivatedByUserId: id },
         });
       }
 
@@ -432,10 +307,7 @@ export class UsersService {
             cascadeInactivatedByUserId: id,
             status: UserStatus.INACTIVE,
           },
-          data: {
-            status: UserStatus.ACTIVE,
-            cascadeInactivatedByUserId: null,
-          },
+          data: { status: UserStatus.ACTIVE, cascadeInactivatedByUserId: null },
         });
       }
 
@@ -444,7 +316,7 @@ export class UsersService {
   }
 
   // =======================
-  // REMOVE (hard delete) - scope + sin relaciones
+  // REMOVE
   // =======================
   async remove(id: number, currentUser: CurrentUserJwt) {
     const actor = await this.getActor(currentUser);
@@ -453,10 +325,9 @@ export class UsersService {
     try {
       await this.prisma.user.delete({ where: { id } });
       return { ok: true, deletedUserId: id };
-    } catch (e: any) {
-      // Prisma FK constraint típicamente es P2003 (depende de tu schema)
+    } catch {
       throw new BadRequestException(
-        'No se pudo eliminar: el usuario tiene relaciones con otros recursos o restricciones de integridad.',
+        'No se pudo eliminar: el usuario tiene relaciones activas.',
       );
     }
   }

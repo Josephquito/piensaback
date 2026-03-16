@@ -1,12 +1,7 @@
-export type ReqUser = {
-  id: number;
-  email: string;
-  role: 'SUPERADMIN' | 'ADMIN' | 'EMPLOYEE';
-  permissions: string[];
-};
+import { CurrentUserJwt } from './current-user-jwt.type';
 
 export type RequestWithUser = {
-  user: ReqUser;
+  user: CurrentUserJwt;
   companyId?: number;
-  headers: Record<string, any>;
+  headers: Record<string, string>;
 };

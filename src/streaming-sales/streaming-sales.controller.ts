@@ -9,49 +9,37 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
-
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { PermissionsGuard } from '../common/guards/permissions.guard';
 import { CompanyScopeGuard } from '../common/guards/company-scope.guard';
 import { RequirePermissions } from '../common/decorators/require-permissions.decorator';
-
 import { StreamingSalesService } from './streaming-sales.service';
 import { CreateStreamingSaleDto } from './dto/create-streaming-sale.dto';
 import { UpdateStreamingSaleDto } from './dto/update-streaming-sale.dto';
-
-type ReqUser = {
-  id: number;
-  email: string;
-  role: 'SUPERADMIN' | 'ADMIN' | 'EMPLOYEE';
-  permissions: string[];
-};
+import { RenewStreamingSaleDto } from './dto/renew-streaming-sale.dto';
+import type { RequestWithUser } from '../common/types/request-with-user.type';
 
 @Controller('streaming-sales')
-@UseGuards(JwtAuthGuard, CompanyScopeGuard)
+@UseGuards(JwtAuthGuard, PermissionsGuard, CompanyScopeGuard)
 export class StreamingSalesController {
   constructor(private readonly service: StreamingSalesService) {}
 
-  @Post()
-  @RequirePermissions('STREAMING_SALES:CREATE')
-  create(
-    @Body() dto: CreateStreamingSaleDto,
-    @Req() req: { user: ReqUser; companyId: number },
-  ) {
-    return this.service.create(dto, req.user, req.companyId);
-  }
-
   @Get()
   @RequirePermissions('STREAMING_SALES:READ')
-  findAll(@Req() req: { user: ReqUser; companyId: number }) {
-    return this.service.findAll(req.user, req.companyId);
+  findAll(@Req() req: RequestWithUser) {
+    return this.service.findAll(req.companyId!);
   }
 
   @Get(':id')
   @RequirePermissions('STREAMING_SALES:READ')
-  findOne(
-    @Param('id', ParseIntPipe) id: number,
-    @Req() req: { user: ReqUser; companyId: number },
-  ) {
-    return this.service.findOne(id, req.user, req.companyId);
+  findOne(@Param('id', ParseIntPipe) id: number, @Req() req: RequestWithUser) {
+    return this.service.findOne(id, req.companyId!);
+  }
+
+  @Post()
+  @RequirePermissions('STREAMING_SALES:CREATE')
+  create(@Body() dto: CreateStreamingSaleDto, @Req() req: RequestWithUser) {
+    return this.service.create(dto, req.companyId!);
   }
 
   @Patch(':id')
@@ -59,20 +47,24 @@ export class StreamingSalesController {
   update(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateStreamingSaleDto,
-    @Req() req: { user: ReqUser; companyId: number },
+    @Req() req: RequestWithUser,
   ) {
-    return this.service.update(id, dto, req.user, req.companyId);
+    return this.service.update(id, dto, req.companyId!);
   }
 
-  /**
-   * Acción para "vaciar" el perfil (terminar relación y devolver a stock)
-   */
   @Post(':id/empty')
   @RequirePermissions('STREAMING_SALES:UPDATE')
-  empty(
+  empty(@Param('id', ParseIntPipe) id: number, @Req() req: RequestWithUser) {
+    return this.service.empty(id, req.companyId!);
+  }
+
+  @Post(':id/renew')
+  @RequirePermissions('STREAMING_SALES:UPDATE')
+  renew(
     @Param('id', ParseIntPipe) id: number,
-    @Req() req: { user: ReqUser; companyId: number },
+    @Body() dto: RenewStreamingSaleDto,
+    @Req() req: RequestWithUser,
   ) {
-    return this.service.empty(id, req.user, req.companyId);
+    return this.service.renew(id, dto, req.companyId!);
   }
 }

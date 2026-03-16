@@ -3,74 +3,48 @@ import {
   Get,
   Param,
   ParseIntPipe,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
-
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { PermissionsGuard } from '../common/guards/permissions.guard';
 import { CompanyScopeGuard } from '../common/guards/company-scope.guard';
 import { RequirePermissions } from '../common/decorators/require-permissions.decorator';
-
-import { PrismaService } from '../../prisma/prisma.service';
-
-type ReqUser = {
-  id: number;
-  email: string;
-  role: 'SUPERADMIN' | 'ADMIN' | 'EMPLOYEE';
-  permissions: string[];
-};
+import { KardexService } from './kardex.service';
+import { KardexQueryDto } from './dto/kardex-query.dto';
+import type { RequestWithUser } from '../common/types/request-with-user.type';
 
 @Controller('kardex')
-@UseGuards(JwtAuthGuard, CompanyScopeGuard)
+@UseGuards(JwtAuthGuard, PermissionsGuard, CompanyScopeGuard)
 export class KardexController {
-  constructor(private prisma: PrismaService) {}
+  constructor(private readonly kardexService: KardexService) {}
 
-  // Lista items (stock + avgCost) por plataforma
+  // Stock actual por plataforma
   @Get('items')
   @RequirePermissions('KARDEX:READ')
-  items(@Req() req: { user: ReqUser; companyId: number }) {
-    return this.prisma.costItem.findMany({
-      where: { companyId: req.companyId },
-      include: { platform: true },
-      orderBy: { id: 'desc' },
-    });
+  getItems(@Req() req: RequestWithUser) {
+    return this.kardexService.getItems(req.companyId!);
   }
 
-  // Historial de movimientos (opcional filtrar por platformId)
+  // Historial de movimientos con paginación y filtro opcional por plataforma
   @Get('movements')
   @RequirePermissions('KARDEX:READ')
-  movements(@Req() req: { user: ReqUser; companyId: number }) {
-    return this.prisma.kardexMovement.findMany({
-      where: { companyId: req.companyId },
-      orderBy: { createdAt: 'desc' },
-      take: 200,
-      include: {
-        item: { include: { platform: true } },
-        account: true,
-        sale: true,
-      },
-    });
+  getMovements(@Query() query: KardexQueryDto, @Req() req: RequestWithUser) {
+    return this.kardexService.getMovements(req.companyId!, query);
   }
 
-  // Movimientos por plataforma
+  // Movimientos por plataforma específica — shortcut del filtro
   @Get('platform/:platformId')
   @RequirePermissions('KARDEX:READ')
-  movementsByPlatform(
+  getMovementsByPlatform(
     @Param('platformId', ParseIntPipe) platformId: number,
-    @Req() req: { user: ReqUser; companyId: number },
+    @Query() query: KardexQueryDto,
+    @Req() req: RequestWithUser,
   ) {
-    return this.prisma.kardexMovement.findMany({
-      where: {
-        companyId: req.companyId,
-        item: { platformId },
-      },
-      orderBy: { createdAt: 'desc' },
-      take: 200,
-      include: {
-        item: { include: { platform: true } },
-        account: true,
-        sale: true,
-      },
+    return this.kardexService.getMovements(req.companyId!, {
+      ...query,
+      platformId,
     });
   }
 }

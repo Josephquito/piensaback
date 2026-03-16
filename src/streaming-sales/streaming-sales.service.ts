@@ -3,40 +3,54 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { PrismaService } from '../../prisma/prisma.service';
 import {
-  Prisma,
   KardexRefType,
+  Prisma,
   SaleStatus,
   StreamingAccountStatus,
 } from '@prisma/client';
+import { PrismaService } from '../../prisma/prisma.service';
 import { KardexService } from '../kardex/kardex.service';
-
 import { CreateStreamingSaleDto } from './dto/create-streaming-sale.dto';
 import { UpdateStreamingSaleDto } from './dto/update-streaming-sale.dto';
+import { RenewStreamingSaleDto } from './dto/renew-streaming-sale.dto';
 
-type ReqUser = {
-  id: number;
-  email: string;
-  role: 'SUPERADMIN' | 'ADMIN' | 'EMPLOYEE';
-  permissions: string[];
-};
+const SALE_SELECT = {
+  id: true,
+  salePrice: true,
+  saleDate: true,
+  daysAssigned: true,
+  cutoffDate: true,
+  costAtSale: true,
+  dailyCost: true,
+  notes: true,
+  status: true,
+  createdAt: true,
+  updatedAt: true,
+  customer: { select: { id: true, name: true, contact: true } },
+  platform: { select: { id: true, name: true } },
+  account: { select: { id: true, email: true } },
+  profile: { select: { id: true, profileNo: true, status: true } },
+} as const;
 
 @Injectable()
 export class StreamingSalesService {
   constructor(
-    private prisma: PrismaService,
-    private kardex: KardexService,
+    private readonly prisma: PrismaService,
+    private readonly kardex: KardexService,
   ) {}
 
-  private parseDate(value: string, field: string) {
+  // =========================
+  // Helpers
+  // =========================
+  private parseDate(value: string, field: string): Date {
     const d = new Date(value);
     if (Number.isNaN(d.getTime()))
       throw new BadRequestException(`${field} inválida.`);
     return d;
   }
 
-  private parseDecimal(value: string, field: string) {
+  private parseDecimal(value: string, field: string): Prisma.Decimal {
     try {
       const dec = new Prisma.Decimal(value);
       if (dec.lessThan(0)) throw new Error('neg');
@@ -46,23 +60,45 @@ export class StreamingSalesService {
     }
   }
 
-  private addDays(date: Date, days: number) {
+  private addDays(date: Date, days: number): Date {
     const d = new Date(date);
     d.setDate(d.getDate() + days);
     return d;
   }
 
-  async create(
-    dto: CreateStreamingSaleDto,
-    _actor: ReqUser,
-    companyId: number,
-  ) {
+  private async findAndAssert(id: number, companyId: number) {
+    const sale = await this.prisma.streamingSale.findFirst({
+      where: { id, companyId },
+      select: {
+        id: true,
+        companyId: true,
+        platformId: true,
+        accountId: true,
+        profileId: true,
+        customerId: true,
+        salePrice: true,
+        saleDate: true,
+        daysAssigned: true,
+        cutoffDate: true,
+        costAtSale: true,
+        dailyCost: true,
+        notes: true,
+        status: true,
+      },
+    });
+    if (!sale) throw new NotFoundException('Venta no encontrada.');
+    return sale;
+  }
+
+  // =========================
+  // CREATE
+  // =========================
+  async create(dto: CreateStreamingSaleDto, companyId: number) {
     const salePrice = this.parseDecimal(dto.salePrice, 'salePrice');
     const saleDate = this.parseDate(dto.saleDate, 'saleDate');
 
-    if (!Number.isInteger(dto.daysAssigned) || dto.daysAssigned <= 0) {
+    if (!Number.isInteger(dto.daysAssigned) || dto.daysAssigned <= 0)
       throw new BadRequestException('daysAssigned inválido.');
-    }
 
     const customer = await this.prisma.customer.findFirst({
       where: { id: dto.customerId, companyId },
@@ -72,14 +108,11 @@ export class StreamingSalesService {
 
     const account = await this.prisma.streamingAccount.findFirst({
       where: { id: dto.accountId, companyId },
-      select: { id: true, companyId: true, platformId: true, status: true },
+      select: { id: true, platformId: true, status: true },
     });
     if (!account) throw new NotFoundException('Cuenta no accesible.');
-    if (account.status !== StreamingAccountStatus.ACTIVE) {
-      throw new BadRequestException(
-        'No se puede vender: la cuenta está inactiva.',
-      );
-    }
+    if (account.status !== StreamingAccountStatus.ACTIVE)
+      throw new BadRequestException('La cuenta está inactiva.');
 
     const profile = await this.prisma.accountProfile.findFirst({
       where: {
@@ -87,30 +120,38 @@ export class StreamingSalesService {
         accountId: dto.accountId,
         status: 'AVAILABLE',
       },
-      select: { id: true, status: true },
+      select: { id: true },
     });
-    if (!profile) {
+    if (!profile)
       throw new BadRequestException(
         'Perfil no disponible o no pertenece a la cuenta.',
       );
-    }
 
     const cutoffDate = this.addDays(saleDate, dto.daysAssigned);
 
-    const { unitCost } = await this.kardex.registerOut({
-      companyId,
-      platformId: account.platformId,
-      qty: 1,
-      refType: KardexRefType.PROFILE_SALE,
-      accountId: account.id,
-    });
-
     return this.prisma.$transaction(async (tx) => {
+      // 1) Kardex OUT — devuelve dailyCost (costo diario promedio)
+      const { unitCost: dailyCost } = await this.kardex.registerOut(
+        {
+          companyId,
+          platformId: account.platformId,
+          qty: 1,
+          refType: KardexRefType.PROFILE_SALE,
+          accountId: account.id,
+        },
+        tx,
+      );
+
+      // 2) costAtSale = dailyCost × daysAssigned
+      const costAtSale = dailyCost.mul(dto.daysAssigned);
+
+      // 3) Perfil → SOLD
       await tx.accountProfile.update({
         where: { id: dto.profileId },
         data: { status: 'SOLD' },
       });
 
+      // 4) Crear venta
       const sale = await tx.streamingSale.create({
         data: {
           companyId,
@@ -122,19 +163,22 @@ export class StreamingSalesService {
           saleDate,
           daysAssigned: dto.daysAssigned,
           cutoffDate,
-          costAtSale: unitCost,
+          costAtSale,
+          dailyCost,
           notes: dto.notes ?? null,
           status: SaleStatus.ACTIVE,
         },
-        include: {
-          customer: true,
-          platform: true,
-          account: true,
-          profile: true,
-        },
+        select: SALE_SELECT,
       });
 
-      const lastMove = await tx.kardexMovement.findFirst({
+      // 5) Actualizar lastPurchaseAt del cliente
+      await tx.customer.update({
+        where: { id: dto.customerId },
+        data: { lastPurchaseAt: saleDate },
+      });
+
+      // 6) Vincular movimiento kardex a la venta
+      await tx.kardexMovement.updateMany({
         where: {
           companyId,
           accountId: account.id,
@@ -142,139 +186,204 @@ export class StreamingSalesService {
           type: 'OUT',
           saleId: null,
         },
-        orderBy: { createdAt: 'desc' },
-        select: { id: true },
+        data: { saleId: sale.id },
       });
-
-      if (lastMove) {
-        await tx.kardexMovement.update({
-          where: { id: lastMove.id },
-          data: { saleId: sale.id },
-        });
-      }
 
       return sale;
     });
   }
 
-  async findAll(_actor: ReqUser, companyId: number) {
+  // =========================
+  // READ
+  // =========================
+  async findAll(companyId: number) {
     return this.prisma.streamingSale.findMany({
       where: { companyId },
-      orderBy: { createdAt: 'desc' },
-      include: { customer: true, platform: true, account: true, profile: true },
+      select: SALE_SELECT,
+      orderBy: { saleDate: 'desc' },
     });
   }
 
-  async findOne(id: number, _actor: ReqUser, companyId: number) {
+  async findOne(id: number, companyId: number) {
     const sale = await this.prisma.streamingSale.findFirst({
       where: { id, companyId },
-      include: { customer: true, platform: true, account: true, profile: true },
+      select: SALE_SELECT,
     });
-    if (!sale) throw new NotFoundException('Venta no existe.');
+    if (!sale) throw new NotFoundException('Venta no encontrada.');
     return sale;
   }
 
-  async update(
-    id: number,
-    dto: UpdateStreamingSaleDto,
-    actor: ReqUser,
-    companyId: number,
-  ) {
-    const sale = await this.findOne(id, actor, companyId);
+  // =========================
+  // UPDATE — sin cambio de perfil
+  // =========================
+  async update(id: number, dto: UpdateStreamingSaleDto, companyId: number) {
+    const sale = await this.findAndAssert(id, companyId);
 
-    // Validar nuevo cliente si se envía
+    if (sale.status !== SaleStatus.ACTIVE)
+      throw new BadRequestException('Solo se pueden editar ventas activas.');
+
     if (dto.customerId && dto.customerId !== sale.customerId) {
       const customer = await this.prisma.customer.findFirst({
         where: { id: dto.customerId, companyId },
+        select: { id: true },
       });
-      if (!customer) throw new NotFoundException('El nuevo cliente no existe.');
+      if (!customer) throw new NotFoundException('Cliente no encontrado.');
     }
 
-    // Validar nuevo perfil si se envía (debe ser de la misma cuenta y estar AVAILABLE)
-    if (dto.profileId && dto.profileId !== sale.profileId) {
-      const profile = await this.prisma.accountProfile.findFirst({
-        where: {
-          id: dto.profileId,
-          accountId: sale.accountId,
-          status: 'AVAILABLE',
-        },
-      });
-      if (!profile)
-        throw new BadRequestException(
-          'El nuevo perfil no está disponible o no pertenece a esta cuenta.',
-        );
-    }
-
-    // Recalcular fechas
-    let newCutoffDate = sale.cutoffDate;
     const saleDate = dto.saleDate
       ? this.parseDate(dto.saleDate, 'saleDate')
       : sale.saleDate;
     const daysAssigned = dto.daysAssigned ?? sale.daysAssigned;
 
-    if (dto.saleDate || dto.daysAssigned) {
-      newCutoffDate = this.addDays(saleDate, daysAssigned);
-    }
+    // recalcular costAtSale si cambian los días
+    const costAtSale =
+      dto.daysAssigned !== undefined
+        ? sale.dailyCost.mul(daysAssigned)
+        : sale.costAtSale;
 
-    return this.prisma.$transaction(async (tx) => {
-      // Si cambió el perfil, liberar el anterior y ocupar el nuevo
-      if (dto.profileId && dto.profileId !== sale.profileId) {
-        await tx.accountProfile.update({
-          where: { id: sale.profileId },
-          data: { status: 'AVAILABLE' },
-        });
-        await tx.accountProfile.update({
-          where: { id: dto.profileId },
-          data: { status: 'SOLD' },
-        });
-      }
+    const cutoffDate =
+      dto.saleDate || dto.daysAssigned
+        ? this.addDays(saleDate, daysAssigned)
+        : sale.cutoffDate;
 
-      return tx.streamingSale.update({
-        where: { id: sale.id },
-        data: {
-          ...(dto.customerId ? { customerId: dto.customerId } : {}),
-          ...(dto.profileId ? { profileId: dto.profileId } : {}),
-          ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
-          ...(dto.salePrice
-            ? { salePrice: this.parseDecimal(dto.salePrice, 'salePrice') }
-            : {}),
-          ...(dto.saleDate ? { saleDate } : {}),
-          ...(dto.daysAssigned ? { daysAssigned } : {}),
-          cutoffDate: newCutoffDate,
-        },
-        include: { customer: true, profile: true },
-      });
+    return this.prisma.streamingSale.update({
+      where: { id: sale.id },
+      data: {
+        ...(dto.customerId ? { customerId: dto.customerId } : {}),
+        ...(dto.salePrice
+          ? { salePrice: this.parseDecimal(dto.salePrice, 'salePrice') }
+          : {}),
+        ...(dto.saleDate ? { saleDate } : {}),
+        ...(dto.daysAssigned ? { daysAssigned, costAtSale } : {}),
+        ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
+        cutoffDate,
+      },
+      select: SALE_SELECT,
     });
   }
 
-  async empty(id: number, actor: ReqUser, companyId: number) {
-    const sale = await this.prisma.streamingSale.findFirst({
-      where: { id, companyId, status: SaleStatus.ACTIVE },
-    });
+  // =========================
+  // VACIAR — perfil vuelve a AVAILABLE
+  // =========================
+  async empty(id: number, companyId: number) {
+    const sale = await this.findAndAssert(id, companyId);
 
-    if (!sale) throw new NotFoundException('Venta activa no encontrada.');
+    if (sale.status !== SaleStatus.ACTIVE)
+      throw new BadRequestException('Solo se pueden vaciar ventas activas.');
 
     return this.prisma.$transaction(async (tx) => {
+      // 1) Perfil → AVAILABLE
       await tx.accountProfile.update({
         where: { id: sale.profileId },
         data: { status: 'AVAILABLE' },
       });
 
+      // 2) Venta → CANCELED
       const updatedSale = await tx.streamingSale.update({
+        where: { id: sale.id },
+        data: { status: SaleStatus.CANCELED },
+        select: SALE_SELECT,
+      });
+
+      // 3) Kardex IN — devuelve el slot con el dailyCost original
+      await this.kardex.registerIn(
+        {
+          companyId,
+          platformId: sale.platformId,
+          qty: 1,
+          unitCost: sale.dailyCost,
+          refType: KardexRefType.PROFILE_SALE,
+          accountId: sale.accountId,
+        },
+        tx,
+      );
+
+      return updatedSale;
+    });
+  }
+
+  // =========================
+  // RENOVAR — nueva venta en mismo perfil sin vaciarlo
+  // =========================
+  async renew(id: number, dto: RenewStreamingSaleDto, companyId: number) {
+    const sale = await this.findAndAssert(id, companyId);
+
+    if (sale.status !== SaleStatus.ACTIVE)
+      throw new BadRequestException('Solo se pueden renovar ventas activas.');
+
+    const saleDate = this.parseDate(dto.saleDate, 'saleDate');
+    const salePrice = this.parseDecimal(dto.salePrice, 'salePrice');
+    const cutoffDate = this.addDays(saleDate, dto.daysAssigned);
+    const customerId = dto.customerId ?? sale.customerId;
+
+    if (dto.customerId && dto.customerId !== sale.customerId) {
+      const customer = await this.prisma.customer.findFirst({
+        where: { id: dto.customerId, companyId },
+        select: { id: true },
+      });
+      if (!customer) throw new NotFoundException('Cliente no encontrado.');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      // 1) Venta anterior → CANCELED
+      await tx.streamingSale.update({
         where: { id: sale.id },
         data: { status: SaleStatus.CANCELED },
       });
 
-      await this.kardex.registerIn({
-        companyId,
-        platformId: sale.platformId,
-        qty: 1,
-        refType: KardexRefType.PROFILE_SALE,
-        accountId: sale.accountId,
-        unitCost: sale.costAtSale,
+      // 2) Kardex OUT para nueva venta — obtiene dailyCost actualizado
+      const { unitCost: dailyCost } = await this.kardex.registerOut(
+        {
+          companyId,
+          platformId: sale.platformId,
+          qty: 1,
+          refType: KardexRefType.PROFILE_SALE,
+          accountId: sale.accountId,
+        },
+        tx,
+      );
+
+      const costAtSale = dailyCost.mul(dto.daysAssigned);
+
+      // 3) Nueva venta — perfil sigue SOLD
+      const newSale = await tx.streamingSale.create({
+        data: {
+          companyId,
+          platformId: sale.platformId,
+          accountId: sale.accountId,
+          profileId: sale.profileId, // mismo perfil
+          customerId,
+          salePrice,
+          saleDate,
+          daysAssigned: dto.daysAssigned,
+          cutoffDate,
+          costAtSale,
+          dailyCost,
+          notes: dto.notes ?? null,
+          status: SaleStatus.ACTIVE,
+        },
+        select: SALE_SELECT,
       });
 
-      return updatedSale;
+      // 4) Actualizar lastPurchaseAt del cliente
+      await tx.customer.update({
+        where: { id: customerId },
+        data: { lastPurchaseAt: saleDate },
+      });
+
+      // 5) Vincular kardex a la nueva venta
+      await tx.kardexMovement.updateMany({
+        where: {
+          companyId,
+          accountId: sale.accountId,
+          refType: KardexRefType.PROFILE_SALE,
+          type: 'OUT',
+          saleId: null,
+        },
+        data: { saleId: newSale.id },
+      });
+
+      return newSale;
     });
   }
 }

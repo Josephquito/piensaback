@@ -13,11 +13,15 @@ export class CreateStreamingAccountDto {
 
   @IsString()
   @MinLength(1)
-  password: string; // plano
+  password: string;
 
   @IsInt()
   @Min(1)
   profilesTotal: number;
+
+  @IsInt()
+  @Min(1)
+  durationDays: number; // ← nuevo: días reales de la cuenta
 
   @IsString()
   purchaseDate: string; // ISO string

@@ -1,24 +1,20 @@
 import {
   IsEnum,
+  IsNotEmpty,
   IsOptional,
   IsString,
   MinLength,
   ValidateIf,
 } from 'class-validator';
+import { CustomerSource } from './create-customer.dto';
 
-export enum CustomerSource {
-  INSTAGRAM = 'INSTAGRAM',
-  FACEBOOK = 'FACEBOOK',
-  WHATSAPP = 'WHATSAPP',
-  REFERRAL = 'REFERRAL',
-  OTHER = 'OTHER',
-}
-
-export class CreateCustomerDto {
+export class ImportCustomerRowDto {
+  @IsNotEmpty()
   @IsString()
   @MinLength(2)
   name: string;
 
+  @IsNotEmpty()
   @IsString()
   @MinLength(7)
   contact: string;
@@ -28,6 +24,7 @@ export class CreateCustomerDto {
   source?: CustomerSource;
 
   @ValidateIf((o) => o.source === CustomerSource.OTHER)
+  @IsNotEmpty()
   @IsString()
   @MinLength(2)
   sourceNote?: string;

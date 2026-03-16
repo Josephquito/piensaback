@@ -7,12 +7,7 @@ import {
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateCompanyDto } from './dto/create-company.dto';
 import { UpdateCompanyDto } from './dto/update-company.dto';
-import {
-  BaseRole,
-  CompanyUserStatus,
-  UserStatus,
-  CompanyStatus,
-} from '@prisma/client';
+import { BaseRole, CompanyUserStatus, UserStatus } from '@prisma/client';
 
 import { CurrentUserJwt } from '../common/types/current-user-jwt.type'; // ajusta ruta
 
@@ -161,30 +156,48 @@ export class CompaniesService {
 
     const users = await this.prisma.user.findMany({
       where: { id: { in: userIds } },
-      select: { id: true, role: true, status: true },
+      select: { id: true, role: true, status: true, createdByUserId: true },
     });
 
+    // Todos deben existir
     if (users.length !== userIds.length) {
-      throw new BadRequestException('Uno o más users no existen.');
+      throw new BadRequestException('Uno o más usuarios no existen.');
     }
 
-    const invalid = users.filter(
-      (u) => u.role !== BaseRole.EMPLOYEE || u.status !== 'ACTIVE',
+    // Solo EMPLOYEE activos
+    const notEmployee = users.filter(
+      (u) => u.role !== BaseRole.EMPLOYEE || u.status !== UserStatus.ACTIVE,
     );
-    if (invalid.length) {
+    if (notEmployee.length) {
       throw new BadRequestException('Solo EMPLOYEE activos pueden asignarse.');
     }
 
-    // crea los que no existan
-    await this.prisma.companyUser.createMany({
-      data: userIds.map((id) => ({ companyId, userId: id, status: 'ACTIVE' })),
-      skipDuplicates: true,
-    });
+    // Solo employees creados por este ADMIN
+    const notOwned = users.filter((u) => u.createdByUserId !== actor.id);
+    if (notOwned.length) {
+      throw new BadRequestException(
+        'Solo puedes asignar EMPLOYEE que tú creaste.',
+      );
+    }
 
-    // reactiva si estaban INACTIVE
-    await this.prisma.companyUser.updateMany({
-      where: { companyId, userId: { in: userIds }, status: 'INACTIVE' },
-      data: { status: 'ACTIVE' },
+    await this.prisma.$transaction(async (tx) => {
+      await tx.companyUser.createMany({
+        data: userIds.map((id) => ({
+          companyId,
+          userId: id,
+          status: CompanyUserStatus.ACTIVE,
+        })),
+        skipDuplicates: true,
+      });
+
+      await tx.companyUser.updateMany({
+        where: {
+          companyId,
+          userId: { in: userIds },
+          status: CompanyUserStatus.INACTIVE,
+        },
+        data: { status: CompanyUserStatus.ACTIVE },
+      });
     });
 
     return { ok: true };
@@ -212,7 +225,6 @@ export class CompaniesService {
   ) {
     await this.assertOwner(actor, companyId);
 
-    // opcional: evitar update vacío
     const hasChanges =
       dto.name !== undefined ||
       dto.phone !== undefined ||
@@ -228,13 +240,14 @@ export class CompaniesService {
         data: {
           ...(dto.name !== undefined ? { name: dto.name } : {}),
           ...(dto.phone !== undefined ? { phone: dto.phone } : {}),
-          ...(dto.status !== undefined
-            ? { status: dto.status as CompanyStatus }
-            : {}),
+          ...(dto.status !== undefined ? { status: dto.status } : {}),
         },
       });
     } catch (e: any) {
-      throw new BadRequestException('No se pudo actualizar la company.');
+      if (e?.code === 'P2002') {
+        throw new BadRequestException('Ya existe una company con ese nombre.');
+      }
+      throw e;
     }
   }
 }

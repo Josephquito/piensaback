@@ -1,5 +1,6 @@
 // dto/update-company.dto.ts
-import { IsIn, IsOptional, IsString, MinLength } from 'class-validator';
+import { IsEnum, IsOptional, IsString, MinLength } from 'class-validator';
+import { CompanyStatus } from '@prisma/client';
 
 export class UpdateCompanyDto {
   @IsOptional()
@@ -13,6 +14,6 @@ export class UpdateCompanyDto {
   phone?: string;
 
   @IsOptional()
-  @IsIn(['ACTIVE', 'INACTIVE'])
-  status?: 'ACTIVE' | 'INACTIVE';
+  @IsEnum(CompanyStatus)
+  status?: CompanyStatus;
 }

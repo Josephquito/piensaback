@@ -1,23 +1,21 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import {
+  BaseRole,
+  KardexRefType,
+  Prisma,
+  StreamingAccountStatus,
+} from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
-import { Prisma, KardexRefType, StreamingAccountStatus } from '@prisma/client';
 import { KardexService } from '../kardex/kardex.service';
-
+import type { CurrentUserJwt } from '../common/types/current-user-jwt.type';
 import { CreateStreamingAccountDto } from './dto/create-streaming-account.dto';
 import { UpdateStreamingAccountDto } from './dto/update-streaming-account.dto';
 
-type ReqUser = {
-  id: number;
-  email: string;
-  role: 'SUPERADMIN' | 'ADMIN' | 'EMPLOYEE';
-  permissions: string[];
-};
-
-// ✅ Tipos explícitos para evitar "unknown" en op.payload
 type KardexInPayload = {
   companyId: number;
   platformId: number;
@@ -39,22 +37,46 @@ type KardexOp =
   | { kind: 'IN'; payload: KardexInPayload }
   | { kind: 'ADJUST_OUT'; payload: KardexAdjustOutPayload };
 
+const ACCOUNT_SELECT = {
+  id: true,
+  email: true,
+  password: true,
+  profilesTotal: true,
+  durationDays: true,
+  purchaseDate: true,
+  cutoffDate: true,
+  totalCost: true,
+  notes: true,
+  status: true,
+  createdAt: true,
+  updatedAt: true,
+  platform: { select: { id: true, name: true } },
+  supplier: { select: { id: true, name: true, balance: true } },
+  profiles: {
+    select: { id: true, profileNo: true, status: true },
+    orderBy: { profileNo: 'asc' as const },
+  },
+} as const;
+
 @Injectable()
 export class StreamingAccountsService {
   constructor(
-    private prisma: PrismaService,
-    private kardex: KardexService,
+    private readonly prisma: PrismaService,
+    private readonly kardex: KardexService,
   ) {}
 
-  private parseDate(value: string, field: string) {
+  // =========================
+  // Helpers
+  // =========================
+
+  private parseDate(value: string, field: string): Date {
     const d = new Date(value);
-    if (Number.isNaN(d.getTime())) {
+    if (Number.isNaN(d.getTime()))
       throw new BadRequestException(`${field} inválida.`);
-    }
     return d;
   }
 
-  private parseDecimal(value: string, field: string) {
+  private parseDecimal(value: string, field: string): Prisma.Decimal {
     try {
       const dec = new Prisma.Decimal(value);
       if (dec.lessThan(0)) throw new Error('neg');
@@ -64,19 +86,44 @@ export class StreamingAccountsService {
     }
   }
 
-  async create(
-    dto: CreateStreamingAccountDto,
-    _actor: ReqUser,
-    companyId: number,
-  ) {
-    // Validar platform pertenece a company
+  private calcDailyCost(
+    totalCost: Prisma.Decimal,
+    profilesTotal: number,
+    durationDays: number,
+  ): Prisma.Decimal {
+    if (profilesTotal === 0 || durationDays === 0) return new Prisma.Decimal(0);
+    return totalCost.div(profilesTotal).div(durationDays);
+  }
+
+  private async findAndAssert(id: number, companyId: number) {
+    const account = await this.prisma.streamingAccount.findFirst({
+      where: { id, companyId },
+      select: {
+        id: true,
+        companyId: true,
+        platformId: true,
+        supplierId: true,
+        profilesTotal: true,
+        durationDays: true,
+        totalCost: true,
+        status: true,
+        email: true,
+      },
+    });
+    if (!account) throw new NotFoundException('Cuenta no encontrada.');
+    return account;
+  }
+
+  // =========================
+  // CREATE
+  // =========================
+  async create(dto: CreateStreamingAccountDto, companyId: number) {
     const platform = await this.prisma.streamingPlatform.findFirst({
       where: { id: dto.platformId, companyId },
       select: { id: true },
     });
     if (!platform) throw new NotFoundException('Plataforma no accesible.');
 
-    // Validar supplier pertenece a company
     const supplier = await this.prisma.supplier.findFirst({
       where: { id: dto.supplierId, companyId },
       select: { id: true },
@@ -86,119 +133,106 @@ export class StreamingAccountsService {
     const purchaseDate = this.parseDate(dto.purchaseDate, 'purchaseDate');
     const cutoffDate = this.parseDate(dto.cutoffDate, 'cutoffDate');
     const totalCost = this.parseDecimal(dto.totalCost, 'totalCost');
+    const { profilesTotal, durationDays } = dto;
 
-    const profilesTotal = dto.profilesTotal;
+    // costo diario por perfil = totalCost / perfiles / días
+    const dailyCost = this.calcDailyCost(
+      totalCost,
+      profilesTotal,
+      durationDays,
+    );
 
-    // unitCost por perfil (según tu lógica)
-    const unitCost =
-      profilesTotal === 0
-        ? new Prisma.Decimal(0)
-        : totalCost.div(profilesTotal);
-
-    return this.prisma
-      .$transaction(async (tx) => {
-        // 1) Crear cuenta
-        let account;
-        try {
-          account = await tx.streamingAccount.create({
-            data: {
-              companyId,
-              platformId: dto.platformId,
-              supplierId: dto.supplierId,
-              email: dto.email.trim(),
-              password: dto.password,
-              profilesTotal,
-              purchaseDate,
-              cutoffDate,
-              totalCost,
-              notes: dto.notes ?? null,
-              status: StreamingAccountStatus.ACTIVE,
-            },
-          });
-        } catch (e: any) {
+    return this.prisma.$transaction(async (tx) => {
+      // 1) Crear cuenta
+      let account: { id: number };
+      try {
+        account = await tx.streamingAccount.create({
+          data: {
+            companyId,
+            platformId: dto.platformId,
+            supplierId: dto.supplierId,
+            email: dto.email.trim(),
+            password: dto.password,
+            profilesTotal,
+            durationDays,
+            purchaseDate,
+            cutoffDate,
+            totalCost,
+            notes: dto.notes ?? null,
+            status: StreamingAccountStatus.ACTIVE,
+          },
+          select: { id: true },
+        });
+      } catch (e: any) {
+        if (e?.code === 'P2002') {
           throw new BadRequestException(
             'Ya existe una cuenta con ese correo en esta empresa y plataforma.',
           );
         }
+        throw e;
+      }
 
-        // ✅ 1.1) Sumar gasto histórico al proveedor (ATÓMICO)
-        await tx.supplier.update({
-          where: { id: dto.supplierId },
-          data: { historicalSpend: { increment: totalCost } },
-        });
+      // 2) Descontar del balance del proveedor
+      await tx.supplier.update({
+        where: { id: dto.supplierId },
+        data: { balance: { decrement: totalCost } },
+      });
 
-        // 2) Crear perfiles 1..N
-        const profilesData = Array.from({ length: profilesTotal }, (_, i) => ({
+      // 3) Crear perfiles AVAILABLE
+      await tx.accountProfile.createMany({
+        data: Array.from({ length: profilesTotal }, (_, i) => ({
           accountId: account.id,
           profileNo: i + 1,
           status: 'AVAILABLE' as const,
-        }));
+        })),
+      });
 
-        if (profilesData.length > 0) {
-          await tx.accountProfile.createMany({ data: profilesData });
-        }
-
-        // (Kardex se registra fuera)
-        return account;
-      })
-      .then(async (account) => {
-        // 3) Kardex IN (N perfiles)
-        await this.kardex.registerIn({
+      // 4) Kardex IN dentro de la misma transacción
+      await this.kardex.registerIn(
+        {
           companyId,
           platformId: dto.platformId,
           qty: profilesTotal,
-          unitCost,
+          unitCost: dailyCost,
           refType: KardexRefType.ACCOUNT_PURCHASE,
           accountId: account.id,
-        });
+        },
+        tx,
+      );
 
-        return this.prisma.streamingAccount.findUnique({
-          where: { id: account.id },
-          include: { profiles: true, platform: true, supplier: true },
-        });
+      return tx.streamingAccount.findUnique({
+        where: { id: account.id },
+        select: ACCOUNT_SELECT,
       });
+    });
   }
 
-  async findAll(_actor: ReqUser, companyId: number) {
+  // =========================
+  // LIST
+  // =========================
+  async findAll(companyId: number) {
     return this.prisma.streamingAccount.findMany({
       where: { companyId },
+      select: ACCOUNT_SELECT,
       orderBy: { createdAt: 'desc' },
-      include: {
-        platform: true,
-        supplier: true,
-        profiles: true,
-      },
     });
   }
 
-  async findOne(id: number, _actor: ReqUser, companyId: number) {
+  async findOne(id: number, companyId: number) {
     const account = await this.prisma.streamingAccount.findFirst({
       where: { id, companyId },
-      include: {
-        platform: true,
-        supplier: true,
-        profiles: true,
-      },
+      select: ACCOUNT_SELECT,
     });
-    if (!account) throw new NotFoundException('Cuenta no existe.');
+    if (!account) throw new NotFoundException('Cuenta no encontrada.');
     return account;
   }
 
-  /**
-   * UPDATE:
-   * - Cambios normales: email/password/fechas/costo/notas
-   * - Cambio profilesTotal: delta IN o ADJUST OUT con reglas
-   * - Cambio status a INACTIVE: baja perfiles AVAILABLE (ADJUST OUT) y bloquea perfiles
-   */
-  async update(
-    id: number,
-    dto: UpdateStreamingAccountDto,
-    actor: ReqUser,
-    companyId: number,
-  ) {
-    const account = await this.findOne(id, actor, companyId);
+  // =========================
+  // UPDATE
+  // =========================
+  async update(id: number, dto: UpdateStreamingAccountDto, companyId: number) {
+    const account = await this.findAndAssert(id, companyId);
 
-    // validar platform/supplier si vienen
     if (dto.platformId !== undefined) {
       const p = await this.prisma.streamingPlatform.findFirst({
         where: { id: dto.platformId, companyId },
@@ -215,48 +249,35 @@ export class StreamingAccountsService {
       if (!s) throw new NotFoundException('Proveedor no accesible.');
     }
 
-    // ---- Cálculo para gasto histórico ----
     const oldSupplierId = account.supplierId;
     const newSupplierId = dto.supplierId ?? oldSupplierId;
-
-    const oldCost = account.totalCost; // Prisma.Decimal
+    const oldCost = account.totalCost;
     const newCost =
       dto.totalCost !== undefined
         ? this.parseDecimal(dto.totalCost, 'totalCost')
         : oldCost;
+    const newDurationDays = dto.durationDays ?? account.durationDays;
+    const effectivePlatformId = dto.platformId ?? account.platformId;
 
-    const sameSupplier = oldSupplierId === newSupplierId;
-
-    // ---- Preparar data update ----
     const data: Prisma.StreamingAccountUpdateInput = {};
-
     if (dto.email !== undefined) data.email = dto.email.trim();
     if (dto.password !== undefined) data.password = dto.password;
     if (dto.notes !== undefined) data.notes = dto.notes ?? null;
-
-    if (dto.purchaseDate !== undefined) {
+    if (dto.purchaseDate !== undefined)
       data.purchaseDate = this.parseDate(dto.purchaseDate, 'purchaseDate');
-    }
-    if (dto.cutoffDate !== undefined) {
+    if (dto.cutoffDate !== undefined)
       data.cutoffDate = this.parseDate(dto.cutoffDate, 'cutoffDate');
-    }
-    if (dto.totalCost !== undefined) {
-      data.totalCost = newCost;
-    }
-
+    if (dto.totalCost !== undefined) data.totalCost = newCost;
+    if (dto.durationDays !== undefined) data.durationDays = dto.durationDays;
     if (dto.platformId !== undefined)
       data.platform = { connect: { id: dto.platformId } };
     if (dto.supplierId !== undefined)
       data.supplier = { connect: { id: dto.supplierId } };
 
-    // ✅ ops de kardex bien tipadas (adiós unknown)
     const kardexOps: KardexOp[] = [];
 
-    // Valores efectivos para kardex
-    const effectivePlatformId = dto.platformId ?? account.platformId;
-
     await this.prisma.$transaction(async (tx) => {
-      // 1) Manejo cambio profilesTotal (usa tx en vez de prisma directo)
+      // 1) Cambio profilesTotal
       if (
         dto.profilesTotal !== undefined &&
         dto.profilesTotal !== account.profilesTotal
@@ -279,20 +300,20 @@ export class StreamingAccountsService {
 
         if (newTotal > oldTotal) {
           const delta = newTotal - oldTotal;
+          await tx.accountProfile.createMany({
+            data: Array.from({ length: delta }, (_, i) => ({
+              accountId: account.id,
+              profileNo: oldTotal + i + 1,
+              status: 'AVAILABLE' as const,
+            })),
+          });
 
-          const newProfiles = Array.from({ length: delta }, (_, i) => ({
-            accountId: account.id,
-            profileNo: oldTotal + i + 1,
-            status: 'AVAILABLE' as const,
-          }));
-
-          if (newProfiles.length > 0) {
-            await tx.accountProfile.createMany({ data: newProfiles });
-          }
-
-          // unitCost = totalCost / newTotal (usar newCost efectivo)
-          const unitCost =
-            newTotal === 0 ? new Prisma.Decimal(0) : newCost.div(newTotal);
+          // recalcular dailyCost con nuevos valores efectivos
+          const dailyCost = this.calcDailyCost(
+            newCost,
+            newTotal,
+            newDurationDays,
+          );
 
           kardexOps.push({
             kind: 'IN',
@@ -300,35 +321,29 @@ export class StreamingAccountsService {
               companyId,
               platformId: effectivePlatformId,
               qty: delta,
-              unitCost,
+              unitCost: dailyCost,
               refType: KardexRefType.PROFILE_ADJUST,
               accountId: account.id,
             },
           });
-
-          data.profilesTotal = newTotal;
         } else {
           const need = oldTotal - newTotal;
-
           if (availableCount < need) {
             throw new BadRequestException(
-              `No se puede reducir: disponibles ${availableCount}, se necesita dar de baja ${need}.`,
+              `No se puede reducir: disponibles ${availableCount}, necesitas dar de baja ${need}.`,
             );
           }
 
-          const toBlock = await tx.accountProfile.findMany({
+          const toDelete = await tx.accountProfile.findMany({
             where: { accountId: account.id, status: 'AVAILABLE' },
             orderBy: { profileNo: 'desc' },
             take: need,
             select: { id: true },
           });
 
-          if (toBlock.length > 0) {
-            await tx.accountProfile.updateMany({
-              where: { id: { in: toBlock.map((p) => p.id) } },
-              data: { status: 'BLOCKED' },
-            });
-          }
+          await tx.accountProfile.deleteMany({
+            where: { id: { in: toDelete.map((p) => p.id) } },
+          });
 
           kardexOps.push({
             kind: 'ADJUST_OUT',
@@ -340,14 +355,14 @@ export class StreamingAccountsService {
               accountId: account.id,
             },
           });
-
-          data.profilesTotal = newTotal;
         }
+
+        data.profilesTotal = newTotal;
       }
 
-      // 2) Manejo inactivación (con tx)
+      // 2) Inactivación
       if (
-        dto.status === 'INACTIVE' &&
+        dto.status === StreamingAccountStatus.INACTIVE &&
         account.status !== StreamingAccountStatus.INACTIVE
       ) {
         const availableCount = await tx.accountProfile.count({
@@ -375,59 +390,59 @@ export class StreamingAccountsService {
         data.status = StreamingAccountStatus.INACTIVE;
       }
 
-      // 3) ✅ Recalcular gasto histórico (con tx)
+      // 3) Balance proveedor
       if (oldSupplierId !== newSupplierId) {
-        // restar al viejo el costo anterior
         await tx.supplier.update({
           where: { id: oldSupplierId },
-          data: { historicalSpend: { decrement: oldCost } },
+          data: { balance: { increment: oldCost } }, // devuelve al viejo
         });
-
-        // sumar al nuevo el costo nuevo
         await tx.supplier.update({
           where: { id: newSupplierId },
-          data: { historicalSpend: { increment: newCost } },
+          data: { balance: { decrement: newCost } }, // descuenta al nuevo
         });
-      } else {
-        // mismo proveedor: ajustar delta si cambió costo
-        if (dto.totalCost !== undefined) {
-          const delta = newCost.sub(oldCost);
-          await tx.supplier.update({
-            where: { id: oldSupplierId },
-            data: { historicalSpend: { increment: delta } },
-          });
+      } else if (dto.totalCost !== undefined) {
+        const delta = newCost.sub(oldCost);
+        await tx.supplier.update({
+          where: { id: oldSupplierId },
+          data: { balance: { decrement: delta } },
+        });
+      }
+
+      // 4) Kardex ops dentro de tx
+      for (const op of kardexOps) {
+        if (op.kind === 'IN') {
+          await this.kardex.registerIn(op.payload, tx);
+        } else {
+          await this.kardex.registerAdjustOut(op.payload, tx);
         }
       }
 
-      // 4) Ejecutar update de cuenta (con tx)
+      // 5) Update cuenta
       try {
         await tx.streamingAccount.update({
           where: { id: account.id },
           data,
         });
-      } catch {
-        throw new BadRequestException('No se pudo actualizar la cuenta.');
+      } catch (e: any) {
+        if (e?.code === 'P2002') {
+          throw new BadRequestException(
+            'Ya existe una cuenta con ese correo en esta empresa y plataforma.',
+          );
+        }
+        throw e;
       }
     });
 
-    // 5) Ejecutar kardex fuera (misma estrategia que tu create)
-    for (const op of kardexOps) {
-      if (op.kind === 'IN') {
-        await this.kardex.registerIn(op.payload);
-      } else {
-        await this.kardex.registerAdjustOut(op.payload);
-      }
-    }
-
-    return this.findOne(account.id, actor, companyId);
+    return this.findOne(account.id, companyId);
   }
 
-  async remove(id: number, actor: ReqUser, companyId: number) {
-    // Si quieres permitir delete, hay que decidir qué pasa con kardex.
-    // Recomendación: no borrar cuentas (soft delete / inactivate).
-    await this.findOne(id, actor, companyId);
+  // =========================
+  // REMOVE — solo inactivar
+  // =========================
+  async remove(id: number, companyId: number) {
+    await this.findAndAssert(id, companyId);
     throw new BadRequestException(
-      'No se permite eliminar cuentas. Inactiva la cuenta.',
+      'No se permite eliminar cuentas. Inactiva la cuenta desde el update.',
     );
   }
 }

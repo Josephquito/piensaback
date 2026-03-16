@@ -11,38 +11,28 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { PermissionsGuard } from '../common/guards/permissions.guard';
 import { RequirePermissions } from '../common/decorators/require-permissions.decorator';
-
 import { CompaniesService } from './companies.service';
 import { CreateCompanyDto } from './dto/create-company.dto';
 import { UpdateCompanyDto } from './dto/update-company.dto';
 import { AssignCompanyEmployeesDto } from './dto/assign-employee.dto';
-
-type ReqUser = {
-  id: number;
-  email: string;
-  role: 'SUPERADMIN' | 'ADMIN' | 'EMPLOYEE';
-  permissions: string[];
-};
+import { CurrentUserJwt } from '../common/types/current-user-jwt.type';
 
 @Controller('companies')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 export class CompaniesController {
   constructor(private readonly companiesService: CompaniesService) {}
 
-  // =========================
-  // CRUD
-  // =========================
-
   @Post()
   @RequirePermissions('COMPANIES:CREATE')
-  create(@Body() dto: CreateCompanyDto, @Req() req: { user: ReqUser }) {
+  create(@Body() dto: CreateCompanyDto, @Req() req: { user: CurrentUserJwt }) {
     return this.companiesService.create(dto, req.user);
   }
 
   @Get()
   @RequirePermissions('COMPANIES:READ')
-  findAll(@Req() req: { user: ReqUser }) {
+  findAll(@Req() req: { user: CurrentUserJwt }) {
     return this.companiesService.findAllVisible(req.user);
   }
 
@@ -50,7 +40,7 @@ export class CompaniesController {
   @RequirePermissions('COMPANIES:READ')
   findOne(
     @Param('id', ParseIntPipe) id: number,
-    @Req() req: { user: ReqUser },
+    @Req() req: { user: CurrentUserJwt },
   ) {
     return this.companiesService.findOneVisible(id, req.user);
   }
@@ -60,46 +50,45 @@ export class CompaniesController {
   update(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateCompanyDto,
-    @Req() req: { user: ReqUser },
+    @Req() req: { user: CurrentUserJwt },
   ) {
     return this.companiesService.update(id, dto, req.user);
   }
 
   @Delete(':id')
   @RequirePermissions('COMPANIES:DELETE')
-  remove(@Param('id', ParseIntPipe) id: number, @Req() req: { user: ReqUser }) {
+  remove(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req: { user: CurrentUserJwt },
+  ) {
     return this.companiesService.remove(id, req.user);
   }
 
-  // =========================
-  // MEMBERS
-  // =========================
-
   @Get(':id/users')
-  @RequirePermissions('COMPANIES-USERS:READ')
+  @RequirePermissions('COMPANIES:READ')
   listMembers(
     @Param('id', ParseIntPipe) id: number,
-    @Req() req: { user: ReqUser },
+    @Req() req: { user: CurrentUserJwt },
   ) {
     return this.companiesService.listMembers(id, req.user);
   }
 
   @Post(':id/users')
-  @RequirePermissions('COMPANIES-USERS:UPDATE')
+  @RequirePermissions('COMPANIES:UPDATE')
   assignEmployees(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: AssignCompanyEmployeesDto,
-    @Req() req: { user: ReqUser },
+    @Req() req: { user: CurrentUserJwt },
   ) {
     return this.companiesService.assignEmployees(id, dto.userIds, req.user);
   }
 
   @Delete(':id/users')
-  @RequirePermissions('COMPANIES-USERS:UPDATE')
+  @RequirePermissions('COMPANIES:UPDATE')
   unassignEmployees(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: AssignCompanyEmployeesDto,
-    @Req() req: { user: ReqUser },
+    @Req() req: { user: CurrentUserJwt },
   ) {
     return this.companiesService.unassignEmployees(id, dto.userIds, req.user);
   }

@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access */
 import {
   BadRequestException,
   CanActivate,
@@ -9,41 +8,40 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { BaseRole, CompanyStatus, CompanyUserStatus } from '@prisma/client';
+import { RequestWithUser } from '../types/request-with-user.type';
 
 @Injectable()
 export class CompanyScopeGuard implements CanActivate {
   constructor(private prisma: PrismaService) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const req = context.switchToHttp().getRequest();
+    const req = context
+      .switchToHttp()
+      .getRequest<RequestWithUser & { companyId?: number }>();
 
-    const actor = req.user as { id: number; role: BaseRole };
+    const actor = req.user;
     if (!actor?.id) throw new ForbiddenException('No autenticado.');
 
-    // SUPERADMIN no trabaja con companies (según tu regla)
     if (actor.role === BaseRole.SUPERADMIN) {
       throw new ForbiddenException('SUPERADMIN no tiene contexto de empresa.');
     }
 
-    // Header puede venir como string
     const raw = req.headers['x-company-id'];
-    if (!raw) {
+    if (!raw || Array.isArray(raw)) {
       throw new BadRequestException('Falta header x-company-id.');
     }
 
-    const companyId = Number(raw);
-    if (!Number.isInteger(companyId) || companyId <= 0) {
+    const companyId = parseInt(raw, 10);
+    if (isNaN(companyId) || companyId <= 0) {
       throw new BadRequestException('x-company-id inválido.');
     }
 
-    // Validar existencia + acceso
-    // 1) ADMIN => owner
     if (actor.role === BaseRole.ADMIN) {
       const company = await this.prisma.company.findFirst({
         where: {
           id: companyId,
           ownerUserId: actor.id,
-          status: CompanyStatus.ACTIVE, // opcional, recomendado
+          status: CompanyStatus.ACTIVE,
         },
         select: { id: true },
       });
@@ -53,11 +51,11 @@ export class CompanyScopeGuard implements CanActivate {
       return true;
     }
 
-    // 2) EMPLOYEE => membership ACTIVE
+    // EMPLOYEE
     const company = await this.prisma.company.findFirst({
       where: {
         id: companyId,
-        status: CompanyStatus.ACTIVE, // opcional, recomendado
+        status: CompanyStatus.ACTIVE,
         users: {
           some: {
             userId: actor.id,

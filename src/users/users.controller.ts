@@ -15,44 +15,37 @@ import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { RequirePermissions } from '../common/decorators/require-permissions.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
-
-type ReqUser = {
-  id: number;
-  email: string;
-  role: 'SUPERADMIN' | 'ADMIN' | 'EMPLOYEE';
-  permissions: string[];
-};
+import { PermissionsGuard } from '../common/guards/permissions.guard';
+import { CurrentUserJwt } from '../common/types/current-user-jwt.type';
 
 @Controller('users')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 export class UsersController {
   constructor(private readonly usersService: UsersService) {}
 
   @Post()
   @RequirePermissions('USERS:CREATE')
-  create(@Body() dto: CreateUserDto, @Req() req: { user: ReqUser }) {
+  create(@Body() dto: CreateUserDto, @Req() req: { user: CurrentUserJwt }) {
     return this.usersService.create(dto, req.user);
   }
 
   @Get()
   @RequirePermissions('USERS:READ')
-  findAll(@Req() req: { user: ReqUser }) {
+  findAll(@Req() req: { user: CurrentUserJwt }) {
     return this.usersService.findAll(req.user);
   }
 
   @Get('me')
-  async me(@Req() req: { user: ReqUser }) {
+  async me(@Req() req: { user: CurrentUserJwt }) {
     const user = await this.usersService.me(req.user.id);
-    return {
-      ...user,
-      permissions: req.user.permissions, // ✅ conservar permisos
-    };
+    return { ...user, permissions: req.user.permissions };
   }
+
   @Get(':id')
   @RequirePermissions('USERS:READ')
   findOne(
     @Param('id', ParseIntPipe) id: number,
-    @Req() req: { user: ReqUser },
+    @Req() req: { user: CurrentUserJwt },
   ) {
     return this.usersService.findOne(id, req.user);
   }
@@ -62,14 +55,17 @@ export class UsersController {
   update(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateUserDto,
-    @Req() req: { user: ReqUser },
+    @Req() req: { user: CurrentUserJwt },
   ) {
     return this.usersService.update(id, dto, req.user);
   }
 
   @Delete(':id')
   @RequirePermissions('USERS:DELETE')
-  remove(@Param('id', ParseIntPipe) id: number, @Req() req: { user: ReqUser }) {
+  remove(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req: { user: CurrentUserJwt },
+  ) {
     return this.usersService.remove(id, req.user);
   }
 }

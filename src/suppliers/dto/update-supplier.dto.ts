@@ -8,6 +8,10 @@ export class UpdateSupplierDto {
 
   @IsOptional()
   @IsString()
-  @MinLength(2)
+  @MinLength(7)
   contact?: string;
+
+  @IsOptional()
+  @IsString()
+  notes?: string;
 }
