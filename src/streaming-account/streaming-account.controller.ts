@@ -7,6 +7,7 @@ import {
   ParseIntPipe,
   Patch,
   Post,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
@@ -47,8 +48,8 @@ export class StreamingAccountsController {
 
   @Get()
   @RequirePermissions('STREAMING_ACCOUNTS:READ')
-  findAll(@Req() req: RequestWithUser) {
-    return this.service.findAll(req.companyId!);
+  findAll(@Req() req: RequestWithUser, @Query('limit') limit?: string) {
+    return this.service.findAll(req.companyId!, limit ? Number(limit) : 100);
   }
 
   @Get(':id')
