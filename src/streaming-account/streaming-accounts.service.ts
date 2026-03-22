@@ -176,14 +176,25 @@ export class StreamingAccountsService {
     );
 
     return this.prisma.$transaction(async (tx) => {
-      let account: { id: number };
-      try {
-        account = await tx.streamingAccount.create({
+      // Buscar si existe una cuenta DELETED con el mismo email+plataforma+empresa
+      const deleted = await tx.streamingAccount.findFirst({
+        where: {
+          companyId,
+          platformId: dto.platformId,
+          email: dto.email.trim(),
+          status: StreamingAccountStatus.DELETED,
+        },
+        select: { id: true },
+      });
+
+      let accountId: number;
+
+      if (deleted) {
+        // Reactivar la cuenta eliminada
+        await tx.streamingAccount.update({
+          where: { id: deleted.id },
           data: {
-            companyId,
-            platformId: dto.platformId,
             supplierId: dto.supplierId,
-            email: dto.email.trim(),
             password: dto.password,
             profilesTotal,
             durationDays,
@@ -193,27 +204,65 @@ export class StreamingAccountsService {
             notes: dto.notes ?? null,
             status: StreamingAccountStatus.ACTIVE,
           },
-          select: { id: true },
         });
-      } catch (e: any) {
-        if (e?.code === 'P2002')
-          throw new BadRequestException(
-            'Ya existe una cuenta con ese correo en esta empresa y plataforma.',
-          );
-        throw e;
+
+        // Eliminar perfiles viejos y recrear limpios
+        await tx.accountProfile.deleteMany({
+          where: { accountId: deleted.id },
+        });
+        await tx.accountProfile.createMany({
+          data: Array.from({ length: profilesTotal }, (_, i) => ({
+            accountId: deleted.id,
+            profileNo: i + 1,
+            status: 'AVAILABLE' as const,
+          })),
+        });
+
+        accountId = deleted.id;
+      } else {
+        // Crear cuenta nueva
+        let account: { id: number };
+        try {
+          account = await tx.streamingAccount.create({
+            data: {
+              companyId,
+              platformId: dto.platformId,
+              supplierId: dto.supplierId,
+              email: dto.email.trim(),
+              password: dto.password,
+              profilesTotal,
+              durationDays,
+              purchaseDate,
+              cutoffDate,
+              totalCost,
+              notes: dto.notes ?? null,
+              status: StreamingAccountStatus.ACTIVE,
+            },
+            select: { id: true },
+          });
+        } catch (e: any) {
+          if (e?.code === 'P2002')
+            throw new BadRequestException(
+              'Ya existe una cuenta activa con ese correo en esta plataforma.',
+            );
+          throw e;
+        }
+
+        await tx.accountProfile.createMany({
+          data: Array.from({ length: profilesTotal }, (_, i) => ({
+            accountId: account.id,
+            profileNo: i + 1,
+            status: 'AVAILABLE' as const,
+          })),
+        });
+
+        accountId = account.id;
       }
 
+      // Común para ambos casos
       await tx.supplier.update({
         where: { id: dto.supplierId },
         data: { balance: { decrement: totalCost } },
-      });
-
-      await tx.accountProfile.createMany({
-        data: Array.from({ length: profilesTotal }, (_, i) => ({
-          accountId: account.id,
-          profileNo: i + 1,
-          status: 'AVAILABLE' as const,
-        })),
       });
 
       await this.kardex.registerIn(
@@ -223,13 +272,13 @@ export class StreamingAccountsService {
           qty: profilesTotal * durationDays,
           unitCost: dailyCost,
           refType: KardexRefType.ACCOUNT_PURCHASE,
-          accountId: account.id,
+          accountId,
         },
         tx,
       );
 
       return tx.streamingAccount.findUnique({
-        where: { id: account.id },
+        where: { id: accountId },
         select: ACCOUNT_SELECT,
       });
     });

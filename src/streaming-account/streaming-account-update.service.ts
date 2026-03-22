@@ -109,6 +109,27 @@ export class StreamingAccountUpdateService {
 
       // 2) Update cuenta
       try {
+        // Si cambia el email, liberar conflicto con cuentas DELETED
+        if (dto.email !== undefined) {
+          const conflict = await tx.streamingAccount.findFirst({
+            where: {
+              companyId,
+              platformId: dto.platformId ?? account.platformId,
+              email: dto.email.trim(),
+              status: StreamingAccountStatus.DELETED,
+              id: { not: account.id },
+            },
+            select: { id: true },
+          });
+
+          if (conflict) {
+            await tx.streamingAccount.update({
+              where: { id: conflict.id },
+              data: { email: `__deleted_${conflict.id}__${dto.email.trim()}` },
+            });
+          }
+        }
+
         await tx.streamingAccount.update({
           where: { id: account.id },
           data,
@@ -116,7 +137,7 @@ export class StreamingAccountUpdateService {
       } catch (e: any) {
         if (e?.code === 'P2002')
           throw new BadRequestException(
-            'Ya existe una cuenta con ese correo en esta empresa y plataforma.',
+            'Ya existe una cuenta activa con ese correo en esta plataforma.',
           );
         throw e;
       }
