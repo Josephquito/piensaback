@@ -1,11 +1,4 @@
-import {
-  IsInt,
-  IsOptional,
-  IsString,
-  Min,
-  MinLength,
-  IsISO8601,
-} from 'class-validator';
+import { IsInt, IsOptional, IsString, Min, IsISO8601 } from 'class-validator';
 
 export class UpdateStreamingSaleDto {
   @IsOptional()
@@ -27,6 +20,5 @@ export class UpdateStreamingSaleDto {
 
   @IsOptional()
   @IsString()
-  @MinLength(1)
-  notes?: string;
+  notes?: string | null; // ← agrega | null y quita MinLength
 }
