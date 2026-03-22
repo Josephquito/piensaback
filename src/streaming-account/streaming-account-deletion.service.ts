@@ -56,7 +56,6 @@ export class StreamingAccountDeletionService {
         `No se puede eliminar: hay ${activeSales} perfiles con ventas vigentes.`,
       );
 
-    // Usa comparación por fecha, no por timestamp
     const daysLeft = this.daysRemainingByDate(account.cutoffDate);
 
     await this.prisma.$transaction(async (tx) => {
@@ -82,12 +81,10 @@ export class StreamingAccountDeletionService {
       }
 
       // 2) Ajuste kardex — solo perfiles que YA eran AVAILABLE antes del paso 1
-      // (los recién liberados ya no tienen días vigentes)
       const originalAvailableCount = await tx.accountProfile.count({
         where: {
           accountId: account.id,
           status: 'AVAILABLE',
-          // excluye los que acabamos de liberar en el paso 1
           id: { notIn: expiredSales.map((s) => s.profileId) },
         },
       });
@@ -101,6 +98,7 @@ export class StreamingAccountDeletionService {
             qty: qtyToAdjust,
             refType: KardexRefType.ACCOUNT_INACTIVATION,
             accountId: account.id,
+            allowNegative: true, // ← permite negativo
           },
           tx,
         );

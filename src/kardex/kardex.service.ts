@@ -137,7 +137,8 @@ export class KardexService {
       qty: number;
       refType: KardexRefType;
       accountId?: number;
-      unitCost?: Prisma.Decimal; // ← opcional
+      unitCost?: Prisma.Decimal;
+      allowNegative?: boolean; // ← agrega
     },
     tx?: TxClient,
   ) {
@@ -148,6 +149,7 @@ export class KardexService {
       refType,
       accountId,
       unitCost: overrideUnitCost,
+      allowNegative = false, // ← agrega
     } = params;
     const client = tx ?? this.prisma;
 
@@ -158,15 +160,15 @@ export class KardexService {
       where: { companyId_platformId: { companyId, platformId } },
     });
     if (!item) throw new BadRequestException('CostItem no existe.');
-    if (item.stock < qty)
+
+    // Solo valida stock si no se permite negativo
+    if (!allowNegative && item.stock < qty)
       throw new BadRequestException('Stock insuficiente para el ajuste.');
 
-    // Si viene unitCost externo lo usa, si no usa el avgCost actual
     const unitCost = overrideUnitCost ?? item.avgCost;
     const totalCost = unitCost.mul(qty);
     const newStock = item.stock - qty;
 
-    // Recalcula avgCost solo si viene unitCost externo
     const newAvg = overrideUnitCost
       ? newStock === 0
         ? new Prisma.Decimal(0)

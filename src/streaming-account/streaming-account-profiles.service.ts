@@ -24,10 +24,9 @@ export class StreamingAccountProfilesService {
     const newTotal = account.profilesTotal + 1;
     const daysLeft = this.accounts.daysRemainingByDate(account.cutoffDate);
 
-    // Recalcula dailyCost con el nuevo total de perfiles
     const newDailyCost = this.accounts.calcDailyCost(
       account.totalCost,
-      newTotal, // ← nuevo total
+      newTotal,
       account.durationDays,
     );
 
@@ -51,7 +50,7 @@ export class StreamingAccountProfilesService {
             companyId,
             platformId: account.platformId,
             qty: daysLeft,
-            unitCost: newDailyCost, // ← costo recalculado
+            unitCost: newDailyCost,
             refType: KardexRefType.PROFILE_ADJUST,
             accountId: account.id,
           },
@@ -81,7 +80,6 @@ export class StreamingAccountProfilesService {
 
     const daysLeft = this.accounts.daysRemainingByDate(account.cutoffDate);
 
-    // Calcula el dailyCost con el nuevo total de perfiles
     const newDailyCost = this.accounts.calcDailyCost(
       account.totalCost,
       newTotal,
@@ -113,9 +111,10 @@ export class StreamingAccountProfilesService {
             companyId,
             platformId: account.platformId,
             qty: daysLeft,
-            unitCost: newDailyCost, // ← costo del nuevo total
+            unitCost: newDailyCost,
             refType: KardexRefType.PROFILE_ADJUST,
             accountId: account.id,
+            allowNegative: true, // ← permite negativo
           },
           tx,
         );
@@ -157,6 +156,7 @@ export class StreamingAccountProfilesService {
               qty: qtyToAdjust,
               refType: KardexRefType.ACCOUNT_INACTIVATION,
               accountId: account.id,
+              allowNegative: true, // ← permite negativo
             },
             tx,
           );
@@ -209,17 +209,12 @@ export class StreamingAccountProfilesService {
     labelId: number | null,
     companyId: number,
   ) {
-    // Verifica que el perfil pertenece a la empresa
     const profile = await this.prisma.accountProfile.findFirst({
-      where: {
-        id: profileId,
-        account: { companyId },
-      },
+      where: { id: profileId, account: { companyId } },
       select: { id: true },
     });
     if (!profile) throw new NotFoundException('Perfil no encontrado.');
 
-    // Si viene labelId, verifica que pertenece a la empresa
     if (labelId !== null) {
       const label = await this.prisma.profileLabel.findFirst({
         where: { id: labelId, companyId },

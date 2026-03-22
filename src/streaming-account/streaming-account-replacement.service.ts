@@ -10,8 +10,6 @@ import { ReplaceCredentialsDto } from './dto/replace-credentials.dto';
 import { ReplacePaidDto } from './dto/replace-paid.dto';
 import { ReplaceFromInventoryDto } from './dto/replace-from-inventory.dto';
 
-// ── Servicio ──────────────────────────────────────────────────────────────────
-
 @Injectable()
 export class StreamingAccountReplacementService {
   constructor(
@@ -88,7 +86,6 @@ export class StreamingAccountReplacementService {
       dto.durationDays,
     );
 
-    // Stock actual del kardex para esta plataforma
     const costItem = await this.prisma.costItem.findUnique({
       where: {
         companyId_platformId: { companyId, platformId: account.platformId },
@@ -97,10 +94,9 @@ export class StreamingAccountReplacementService {
     });
     const currentStock = costItem?.stock ?? 0;
 
-    // Días restantes de ventas activas que se transfieren a cuenta B
     const activeSales = await this.prisma.streamingSale.findMany({
       where: { accountId: account.id, status: 'ACTIVE' },
-      select: { cutoffDate: true, pausedDaysLeft: true, status: true },
+      select: { cutoffDate: true },
     });
 
     const soldDaysToTransfer = activeSales.reduce((acc, sale) => {
@@ -111,14 +107,15 @@ export class StreamingAccountReplacementService {
 
     await this.prisma.$transaction(async (tx) => {
       // 1) ADJUST_OUT — cierra todo el stock actual de la plataforma
-      if (currentStock > 0) {
+      if (currentStock !== 0) {
         await this.kardex.registerAdjustOut(
           {
             companyId,
             platformId: account.platformId,
-            qty: currentStock,
+            qty: Math.abs(currentStock),
             refType: KardexRefType.ACCOUNT_REPLACEMENT,
             accountId: account.id,
+            allowNegative: true,
           },
           tx,
         );
@@ -229,7 +226,6 @@ export class StreamingAccountReplacementService {
       where: { accountId: accountA.id, status: 'AVAILABLE' },
     });
 
-    // Días restantes de ventas activas de A que migran a B
     const activeSalesA = await this.prisma.streamingSale.findMany({
       where: { accountId: accountA.id, status: 'ACTIVE' },
       select: { cutoffDate: true },
@@ -250,6 +246,7 @@ export class StreamingAccountReplacementService {
             qty: qtyCloseA,
             refType: KardexRefType.ACCOUNT_REPLACEMENT,
             accountId: accountA.id,
+            allowNegative: true,
           },
           tx,
         );
@@ -264,6 +261,7 @@ export class StreamingAccountReplacementService {
             qty: soldDaysA,
             refType: KardexRefType.ACCOUNT_REPLACEMENT,
             accountId: accountA.id,
+            allowNegative: true,
           },
           tx,
         );
@@ -279,6 +277,7 @@ export class StreamingAccountReplacementService {
             qty: qtyCloseB,
             refType: KardexRefType.ACCOUNT_REPLACEMENT,
             accountId: accountB.id,
+            allowNegative: true,
           },
           tx,
         );

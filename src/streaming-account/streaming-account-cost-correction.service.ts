@@ -75,14 +75,14 @@ export class StreamingAccountCostCorrectionService {
 
         const currentStock = costItem?.stock ?? 0;
 
-        if (currentStock > 0) {
+        if (currentStock !== 0) {
           if (dailyCostDelta.greaterThan(0)) {
             // costo subió — IN por la diferencia sobre el stock actual
             await this.kardex.registerIn(
               {
                 companyId,
                 platformId: account.platformId,
-                qty: currentStock,
+                qty: Math.abs(currentStock), // ← abs por si es negativo
                 unitCost: dailyCostDelta,
                 refType: KardexRefType.COST_CORRECTION,
                 accountId: account.id,
@@ -95,9 +95,10 @@ export class StreamingAccountCostCorrectionService {
               {
                 companyId,
                 platformId: account.platformId,
-                qty: currentStock,
+                qty: Math.abs(currentStock), // ← abs por si es negativo
                 refType: KardexRefType.COST_CORRECTION,
                 accountId: account.id,
+                allowNegative: true, // ← permite negativo
               },
               tx,
             );
