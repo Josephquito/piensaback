@@ -277,6 +277,7 @@ model StreamingPlatform {
   accounts       StreamingAccount[]
   costItems      CostItem[]
   streamingSales StreamingSale[]
+  profileLabels ProfileLabel[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt      @map("updated_at")
@@ -468,16 +469,20 @@ model KardexMovement {
 model ProfileLabel {
   id        Int     @id @default(autoincrement())
   companyId Int     @map("company_id")
+  platformId Int    @map("platform_id")
+
   name      String 
   color     String 
   
-  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  profiles  AccountProfile[]
+  company  Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  platform StreamingPlatform @relation(fields: [platformId], references: [id], onDelete: Cascade)
+  profiles AccountProfile[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt      @map("updated_at")
 
-  @@unique([companyId, name])
+  @@unique([companyId, platformId, name])
   @@index([companyId])
+  @@index([platformId])
   @@map("profile_labels")
 }

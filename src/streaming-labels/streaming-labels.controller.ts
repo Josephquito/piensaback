@@ -7,6 +7,7 @@ import {
   ParseIntPipe,
   Patch,
   Post,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
@@ -26,8 +27,14 @@ export class StreamingLabelsController {
 
   @Get()
   @RequirePermissions('STREAMING_ACCOUNTS:READ')
-  findAll(@Req() req: RequestWithUser) {
-    return this.service.findAll(req.companyId!);
+  findAll(
+    @Req() req: RequestWithUser,
+    @Query('platformId') platformId?: string,
+  ) {
+    return this.service.findAll(
+      req.companyId!,
+      platformId ? Number(platformId) : undefined,
+    );
   }
 
   @Post()

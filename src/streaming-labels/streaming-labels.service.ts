@@ -11,14 +11,18 @@ import { UpdateStreamingLabelDto } from './dto/update-streaming-label.dto';
 export class StreamingLabelsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async findAll(companyId: number) {
+  async findAll(companyId: number, platformId?: number) {
     return this.prisma.profileLabel.findMany({
-      where: { companyId },
+      where: {
+        companyId,
+        ...(platformId ? { platformId } : {}),
+      },
       orderBy: { name: 'asc' },
       select: {
         id: true,
         name: true,
         color: true,
+        platformId: true,
         createdAt: true,
         updatedAt: true,
         _count: { select: { profiles: true } },
@@ -27,20 +31,35 @@ export class StreamingLabelsService {
   }
 
   async create(dto: CreateStreamingLabelDto, companyId: number) {
+    // Verifica que la plataforma pertenece a la empresa
+    const platform = await this.prisma.streamingPlatform.findFirst({
+      where: { id: dto.platformId, companyId },
+      select: { id: true },
+    });
+    if (!platform) throw new BadRequestException('Plataforma no accesible.');
+
     try {
       return await this.prisma.profileLabel.create({
-        data: { companyId, name: dto.name.trim(), color: dto.color },
+        data: {
+          companyId,
+          platformId: dto.platformId,
+          name: dto.name.trim(),
+          color: dto.color,
+        },
         select: {
           id: true,
           name: true,
           color: true,
+          platformId: true,
           createdAt: true,
           updatedAt: true,
         },
       });
     } catch (e: any) {
       if (e?.code === 'P2002')
-        throw new BadRequestException('Ya existe una etiqueta con ese nombre.');
+        throw new BadRequestException(
+          'Ya existe una etiqueta con ese nombre en esta plataforma.',
+        );
       throw e;
     }
   }
@@ -58,13 +77,16 @@ export class StreamingLabelsService {
           id: true,
           name: true,
           color: true,
+          platformId: true,
           createdAt: true,
           updatedAt: true,
         },
       });
     } catch (e: any) {
       if (e?.code === 'P2002')
-        throw new BadRequestException('Ya existe una etiqueta con ese nombre.');
+        throw new BadRequestException(
+          'Ya existe una etiqueta con ese nombre en esta plataforma.',
+        );
       throw e;
     }
   }
