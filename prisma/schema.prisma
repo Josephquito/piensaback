@@ -323,6 +323,8 @@ model StreamingAccount {
   @@index([platformId])
   @@index([supplierId])
   @@index([status])
+  @@index([companyId, status])
+
   @@map("streaming_accounts")
 }
 
@@ -342,6 +344,8 @@ model AccountProfile {
   @@unique([accountId, profileNo])
   @@index([accountId])
   @@index([status])
+  @@index([accountId, status])
+
   @@map("account_profiles")
 }
 
@@ -388,6 +392,10 @@ model StreamingSale {
   @@index([customerId])
   @@index([cutoffDate])
   @@index([status])
+  @@index([companyId, status])
+@@index([companyId, accountId])
+@@index([companyId, customerId])
+@@index([companyId, cutoffDate])
   @@map("streaming_sales")
 }
 
@@ -450,5 +458,6 @@ model KardexMovement {
   @@index([refType])
   @@index([accountId])
   @@index([saleId])
+  @@index([companyId, itemId])
   @@map("kardex_movements")
 }
