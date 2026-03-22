@@ -135,10 +135,18 @@ export class KardexService {
       qty: number;
       refType: KardexRefType;
       accountId?: number;
+      unitCost?: Prisma.Decimal; // ← opcional
     },
     tx?: TxClient,
   ) {
-    const { companyId, platformId, qty, refType, accountId } = params;
+    const {
+      companyId,
+      platformId,
+      qty,
+      refType,
+      accountId,
+      unitCost: overrideUnitCost,
+    } = params;
     const client = tx ?? this.prisma;
 
     if (!Number.isInteger(qty) || qty <= 0)
@@ -151,13 +159,21 @@ export class KardexService {
     if (item.stock < qty)
       throw new BadRequestException('Stock insuficiente para el ajuste.');
 
-    const unitCost = item.avgCost;
+    // Si viene unitCost externo lo usa, si no usa el avgCost actual
+    const unitCost = overrideUnitCost ?? item.avgCost;
     const totalCost = unitCost.mul(qty);
     const newStock = item.stock - qty;
 
+    // Recalcula avgCost solo si viene unitCost externo
+    const newAvg = overrideUnitCost
+      ? newStock === 0
+        ? new Prisma.Decimal(0)
+        : item.avgCost.mul(item.stock).sub(totalCost).div(newStock)
+      : item.avgCost;
+
     const updatedItem = await client.costItem.update({
       where: { id: item.id },
-      data: { stock: newStock },
+      data: { stock: newStock, avgCost: newAvg },
     });
 
     const movement = await client.kardexMovement.create({
@@ -170,7 +186,7 @@ export class KardexService {
         unitCost,
         totalCost,
         stockAfter: newStock,
-        avgCostAfter: item.avgCost,
+        avgCostAfter: newAvg,
         accountId: accountId ?? null,
         saleId: null,
       },

@@ -76,7 +76,10 @@ export class StreamingPlatformsService {
       return await this.prisma.streamingPlatform.create({
         data: {
           companyId,
-          name: dto.name.trim(),
+          name: dto.name
+            .trim()
+            .toLowerCase()
+            .replace(/\b\w/g, (c) => c.toUpperCase()),
           active: dto.active ?? true,
         },
         select: PLATFORM_SELECT,
@@ -110,7 +113,14 @@ export class StreamingPlatformsService {
       return await this.prisma.streamingPlatform.update({
         where: { id },
         data: {
-          ...(dto.name !== undefined ? { name: dto.name.trim() } : {}),
+          ...(dto.name !== undefined
+            ? {
+                name: dto.name
+                  .trim()
+                  .toLowerCase()
+                  .replace(/\b\w/g, (c) => c.toUpperCase()),
+              }
+            : {}),
           ...(dto.active !== undefined ? { active: dto.active } : {}),
         },
         select: PLATFORM_SELECT,

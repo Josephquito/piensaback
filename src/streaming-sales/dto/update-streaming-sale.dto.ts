@@ -13,16 +13,12 @@ export class UpdateStreamingSaleDto {
   customerId?: number;
 
   @IsOptional()
-  @IsInt()
-  profileId?: number;
-
-  @IsOptional()
   @IsString()
-  salePrice?: string; // decimal string
+  salePrice?: string;
 
   @IsOptional()
   @IsISO8601()
-  saleDate?: string; // ISO string
+  saleDate?: string;
 
   @IsOptional()
   @IsInt()

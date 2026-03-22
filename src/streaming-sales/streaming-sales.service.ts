@@ -6,6 +6,7 @@ import {
 import {
   KardexRefType,
   Prisma,
+  RenewalMessageStatus,
   SaleStatus,
   StreamingAccountStatus,
 } from '@prisma/client';
@@ -15,7 +16,7 @@ import { CreateStreamingSaleDto } from './dto/create-streaming-sale.dto';
 import { UpdateStreamingSaleDto } from './dto/update-streaming-sale.dto';
 import { RenewStreamingSaleDto } from './dto/renew-streaming-sale.dto';
 
-const SALE_SELECT = {
+export const SALE_SELECT = {
   id: true,
   salePrice: true,
   saleDate: true,
@@ -25,6 +26,11 @@ const SALE_SELECT = {
   dailyCost: true,
   notes: true,
   status: true,
+  renewalStatus: true,
+  pausedAt: true,
+  pausedDaysLeft: true,
+  creditAmount: true,
+  creditRefunded: true,
   createdAt: true,
   updatedAt: true,
   customer: { select: { id: true, name: true, contact: true } },
@@ -41,16 +47,16 @@ export class StreamingSalesService {
   ) {}
 
   // =========================
-  // Helpers
+  // Helpers públicos
   // =========================
-  private parseDate(value: string, field: string): Date {
+  parseDate(value: string, field: string): Date {
     const d = new Date(value);
     if (Number.isNaN(d.getTime()))
       throw new BadRequestException(`${field} inválida.`);
     return d;
   }
 
-  private parseDecimal(value: string, field: string): Prisma.Decimal {
+  parseDecimal(value: string, field: string): Prisma.Decimal {
     try {
       const dec = new Prisma.Decimal(value);
       if (dec.lessThan(0)) throw new Error('neg');
@@ -60,13 +66,56 @@ export class StreamingSalesService {
     }
   }
 
-  private addDays(date: Date, days: number): Date {
-    const d = new Date(date);
-    d.setDate(d.getDate() + days);
-    return d;
+  // Agrega días desde inicio del día UTC de la fecha base
+  addDays(date: Date, days: number): Date {
+    const base = new Date(
+      Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()),
+    );
+    base.setUTCDate(base.getUTCDate() + days);
+    return base;
   }
 
-  private async findAndAssert(id: number, companyId: number) {
+  // Calcula días restantes comparando solo fechas UTC
+  daysRemaining(cutoffDate: Date): number {
+    return this.daysRemainingByDate(cutoffDate);
+  }
+
+  private daysRemainingByDate(cutoffDate: Date): number {
+    const now = new Date();
+    const cutoff = new Date(
+      Date.UTC(
+        cutoffDate.getUTCFullYear(),
+        cutoffDate.getUTCMonth(),
+        cutoffDate.getUTCDate(),
+      ),
+    );
+    const today = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
+    );
+    return Math.max(
+      0,
+      Math.ceil((cutoff.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)),
+    );
+  }
+
+  private startOfTodayUTC(): Date {
+    const now = new Date();
+    return new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
+    );
+  }
+
+  private isToday(date: Date): boolean {
+    const today = this.startOfTodayUTC().toISOString().split('T')[0];
+    const d = new Date(
+      Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()),
+    )
+      .toISOString()
+      .split('T')[0];
+    return today === d;
+  }
+
+  async findAndAssert(id: number, companyId: number) {
     const sale = await this.prisma.streamingSale.findFirst({
       where: { id, companyId },
       select: {
@@ -84,6 +133,11 @@ export class StreamingSalesService {
         dailyCost: true,
         notes: true,
         status: true,
+        renewalStatus: true,
+        pausedAt: true,
+        pausedDaysLeft: true,
+        creditAmount: true,
+        creditRefunded: true,
       },
     });
     if (!sale) throw new NotFoundException('Venta no encontrada.');
@@ -111,8 +165,13 @@ export class StreamingSalesService {
       select: { id: true, platformId: true, status: true },
     });
     if (!account) throw new NotFoundException('Cuenta no accesible.');
-    if (account.status !== StreamingAccountStatus.ACTIVE)
-      throw new BadRequestException('La cuenta está inactiva.');
+    if (
+      account.status !== StreamingAccountStatus.ACTIVE &&
+      account.status !== StreamingAccountStatus.EXPIRED
+    )
+      throw new BadRequestException(
+        'La cuenta no está disponible para ventas.',
+      );
 
     const profile = await this.prisma.accountProfile.findFirst({
       where: {
@@ -128,30 +187,29 @@ export class StreamingSalesService {
       );
 
     const cutoffDate = this.addDays(saleDate, dto.daysAssigned);
+    const renewalStatus = this.isToday(cutoffDate)
+      ? RenewalMessageStatus.PENDING
+      : RenewalMessageStatus.NOT_APPLICABLE;
 
     return this.prisma.$transaction(async (tx) => {
-      // 1) Kardex OUT — devuelve dailyCost (costo diario promedio)
       const { unitCost: dailyCost } = await this.kardex.registerOut(
         {
           companyId,
           platformId: account.platformId,
-          qty: 1,
+          qty: dto.daysAssigned,
           refType: KardexRefType.PROFILE_SALE,
           accountId: account.id,
         },
         tx,
       );
 
-      // 2) costAtSale = dailyCost × daysAssigned
       const costAtSale = dailyCost.mul(dto.daysAssigned);
 
-      // 3) Perfil → SOLD
       await tx.accountProfile.update({
         where: { id: dto.profileId },
         data: { status: 'SOLD' },
       });
 
-      // 4) Crear venta
       const sale = await tx.streamingSale.create({
         data: {
           companyId,
@@ -167,17 +225,16 @@ export class StreamingSalesService {
           dailyCost,
           notes: dto.notes ?? null,
           status: SaleStatus.ACTIVE,
+          renewalStatus,
         },
         select: SALE_SELECT,
       });
 
-      // 5) Actualizar lastPurchaseAt del cliente
       await tx.customer.update({
         where: { id: dto.customerId },
         data: { lastPurchaseAt: saleDate },
       });
 
-      // 6) Vincular movimiento kardex a la venta
       await tx.kardexMovement.updateMany({
         where: {
           companyId,
@@ -196,9 +253,23 @@ export class StreamingSalesService {
   // =========================
   // READ
   // =========================
-  async findAll(companyId: number) {
+  async findAll(
+    companyId: number,
+    filters?: {
+      status?: SaleStatus;
+      renewalStatus?: RenewalMessageStatus;
+      accountId?: number;
+    },
+  ) {
     return this.prisma.streamingSale.findMany({
-      where: { companyId },
+      where: {
+        companyId,
+        ...(filters?.status ? { status: filters.status } : {}),
+        ...(filters?.renewalStatus
+          ? { renewalStatus: filters.renewalStatus }
+          : {}),
+        ...(filters?.accountId ? { accountId: filters.accountId } : {}),
+      },
       select: SALE_SELECT,
       orderBy: { saleDate: 'desc' },
     });
@@ -214,13 +285,15 @@ export class StreamingSalesService {
   }
 
   // =========================
-  // UPDATE — sin cambio de perfil
+  // UPDATE
   // =========================
   async update(id: number, dto: UpdateStreamingSaleDto, companyId: number) {
     const sale = await this.findAndAssert(id, companyId);
 
-    if (sale.status !== SaleStatus.ACTIVE)
-      throw new BadRequestException('Solo se pueden editar ventas activas.');
+    if (sale.status !== SaleStatus.ACTIVE && sale.status !== SaleStatus.PAUSED)
+      throw new BadRequestException(
+        'Solo se pueden editar ventas activas o pausadas.',
+      );
 
     if (dto.customerId && dto.customerId !== sale.customerId) {
       const customer = await this.prisma.customer.findFirst({
@@ -235,7 +308,6 @@ export class StreamingSalesService {
       : sale.saleDate;
     const daysAssigned = dto.daysAssigned ?? sale.daysAssigned;
 
-    // recalcular costAtSale si cambian los días
     const costAtSale =
       dto.daysAssigned !== undefined
         ? sale.dailyCost.mul(daysAssigned)
@@ -245,6 +317,16 @@ export class StreamingSalesService {
       dto.saleDate || dto.daysAssigned
         ? this.addDays(saleDate, daysAssigned)
         : sale.cutoffDate;
+
+    let renewalStatus = sale.renewalStatus;
+    if (dto.saleDate || dto.daysAssigned) {
+      const today = this.startOfTodayUTC();
+      if (this.isToday(cutoffDate)) {
+        renewalStatus = RenewalMessageStatus.PENDING;
+      } else if (cutoffDate >= today) {
+        renewalStatus = RenewalMessageStatus.NOT_APPLICABLE;
+      }
+    }
 
     return this.prisma.streamingSale.update({
       where: { id: sale.id },
@@ -257,6 +339,7 @@ export class StreamingSalesService {
         ...(dto.daysAssigned ? { daysAssigned, costAtSale } : {}),
         ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
         cutoffDate,
+        renewalStatus,
       },
       select: SALE_SELECT,
     });
@@ -268,48 +351,63 @@ export class StreamingSalesService {
   async empty(id: number, companyId: number) {
     const sale = await this.findAndAssert(id, companyId);
 
-    if (sale.status !== SaleStatus.ACTIVE)
-      throw new BadRequestException('Solo se pueden vaciar ventas activas.');
+    if (
+      sale.status !== SaleStatus.ACTIVE &&
+      sale.status !== SaleStatus.EXPIRED &&
+      sale.status !== SaleStatus.PAUSED
+    )
+      throw new BadRequestException('Esta venta no se puede vaciar.');
+
+    const remaining =
+      sale.status === SaleStatus.PAUSED && sale.pausedDaysLeft != null
+        ? Number(sale.pausedDaysLeft)
+        : this.daysRemainingByDate(sale.cutoffDate);
 
     return this.prisma.$transaction(async (tx) => {
-      // 1) Perfil → AVAILABLE
       await tx.accountProfile.update({
         where: { id: sale.profileId },
         data: { status: 'AVAILABLE' },
       });
 
-      // 2) Venta → CANCELED
       const updatedSale = await tx.streamingSale.update({
         where: { id: sale.id },
-        data: { status: SaleStatus.CANCELED },
+        data: {
+          status: SaleStatus.CLOSED,
+          creditAmount: null,
+          pausedAt: null,
+          pausedDaysLeft: null,
+        },
         select: SALE_SELECT,
       });
 
-      // 3) Kardex IN — devuelve el slot con el dailyCost original
-      await this.kardex.registerIn(
-        {
-          companyId,
-          platformId: sale.platformId,
-          qty: 1,
-          unitCost: sale.dailyCost,
-          refType: KardexRefType.PROFILE_SALE,
-          accountId: sale.accountId,
-        },
-        tx,
-      );
+      if (remaining > 0) {
+        await this.kardex.registerIn(
+          {
+            companyId,
+            platformId: sale.platformId,
+            qty: remaining,
+            unitCost: sale.dailyCost,
+            refType: KardexRefType.PROFILE_SALE,
+            accountId: sale.accountId,
+          },
+          tx,
+        );
+      }
 
       return updatedSale;
     });
   }
 
   // =========================
-  // RENOVAR — nueva venta en mismo perfil sin vaciarlo
+  // RENOVAR — nueva venta en mismo perfil
   // =========================
   async renew(id: number, dto: RenewStreamingSaleDto, companyId: number) {
     const sale = await this.findAndAssert(id, companyId);
 
-    if (sale.status !== SaleStatus.ACTIVE)
-      throw new BadRequestException('Solo se pueden renovar ventas activas.');
+    if (sale.status !== SaleStatus.ACTIVE && sale.status !== SaleStatus.EXPIRED)
+      throw new BadRequestException(
+        'Solo se pueden renovar ventas activas o expiradas.',
+      );
 
     const saleDate = this.parseDate(dto.saleDate, 'saleDate');
     const salePrice = this.parseDecimal(dto.salePrice, 'salePrice');
@@ -324,19 +422,21 @@ export class StreamingSalesService {
       if (!customer) throw new NotFoundException('Cliente no encontrado.');
     }
 
+    const renewalStatus = this.isToday(cutoffDate)
+      ? RenewalMessageStatus.PENDING
+      : RenewalMessageStatus.NOT_APPLICABLE;
+
     return this.prisma.$transaction(async (tx) => {
-      // 1) Venta anterior → CANCELED
       await tx.streamingSale.update({
         where: { id: sale.id },
-        data: { status: SaleStatus.CANCELED },
+        data: { status: SaleStatus.CLOSED },
       });
 
-      // 2) Kardex OUT para nueva venta — obtiene dailyCost actualizado
       const { unitCost: dailyCost } = await this.kardex.registerOut(
         {
           companyId,
           platformId: sale.platformId,
-          qty: 1,
+          qty: dto.daysAssigned,
           refType: KardexRefType.PROFILE_SALE,
           accountId: sale.accountId,
         },
@@ -345,13 +445,12 @@ export class StreamingSalesService {
 
       const costAtSale = dailyCost.mul(dto.daysAssigned);
 
-      // 3) Nueva venta — perfil sigue SOLD
       const newSale = await tx.streamingSale.create({
         data: {
           companyId,
           platformId: sale.platformId,
           accountId: sale.accountId,
-          profileId: sale.profileId, // mismo perfil
+          profileId: sale.profileId,
           customerId,
           salePrice,
           saleDate,
@@ -361,17 +460,16 @@ export class StreamingSalesService {
           dailyCost,
           notes: dto.notes ?? null,
           status: SaleStatus.ACTIVE,
+          renewalStatus,
         },
         select: SALE_SELECT,
       });
 
-      // 4) Actualizar lastPurchaseAt del cliente
       await tx.customer.update({
         where: { id: customerId },
         data: { lastPurchaseAt: saleDate },
       });
 
-      // 5) Vincular kardex a la nueva venta
       await tx.kardexMovement.updateMany({
         where: {
           companyId,
@@ -384,6 +482,28 @@ export class StreamingSalesService {
       });
 
       return newSale;
+    });
+  }
+
+  // =========================
+  // ACTUALIZAR RENEWAL STATUS manualmente
+  // =========================
+  async updateRenewalStatus(
+    id: number,
+    status: RenewalMessageStatus,
+    companyId: number,
+  ) {
+    const sale = await this.findAndAssert(id, companyId);
+
+    if (sale.status !== SaleStatus.ACTIVE && sale.status !== SaleStatus.EXPIRED)
+      throw new BadRequestException(
+        'Solo se puede actualizar el estado de renovación en ventas activas o expiradas.',
+      );
+
+    return this.prisma.streamingSale.update({
+      where: { id: sale.id },
+      data: { renewalStatus: status },
+      select: SALE_SELECT,
     });
   }
 }

@@ -11,10 +11,10 @@ export class CreateStreamingSaleDto {
   customerId: number;
 
   @IsString()
-  salePrice: string; // decimal string
+  salePrice: string;
 
   @IsString()
-  saleDate: string; // ISO string
+  saleDate: string;
 
   @IsInt()
   @Min(1)

@@ -1,34 +1,143 @@
 -- CreateEnum
-CREATE TYPE "StreamingAccountStatus" AS ENUM ('ACTIVE', 'INACTIVE');
+CREATE TYPE "BaseRole" AS ENUM ('SUPERADMIN', 'ADMIN', 'EMPLOYEE');
+
+-- CreateEnum
+CREATE TYPE "UserStatus" AS ENUM ('ACTIVE', 'INACTIVE', 'BLOCKED');
+
+-- CreateEnum
+CREATE TYPE "CompanyStatus" AS ENUM ('ACTIVE', 'INACTIVE');
+
+-- CreateEnum
+CREATE TYPE "CompanyUserStatus" AS ENUM ('ACTIVE', 'INACTIVE');
+
+-- CreateEnum
+CREATE TYPE "PermissionAction" AS ENUM ('CREATE', 'READ', 'UPDATE', 'DELETE');
+
+-- CreateEnum
+CREATE TYPE "PermissionResource" AS ENUM ('USERS', 'PERMISSIONS', 'COMPANIES', 'SUPPLIERS', 'CUSTOMERS', 'STREAMING_PLATFORMS', 'STREAMING_ACCOUNTS', 'STREAMING_SALES', 'KARDEX');
+
+-- CreateEnum
+CREATE TYPE "CustomerSource" AS ENUM ('INSTAGRAM', 'FACEBOOK', 'WHATSAPP', 'REFERRAL', 'OTHER');
+
+-- CreateEnum
+CREATE TYPE "StreamingAccountStatus" AS ENUM ('ACTIVE', 'EXPIRED', 'INACTIVE', 'DELETED');
 
 -- CreateEnum
 CREATE TYPE "AccountProfileStatus" AS ENUM ('AVAILABLE', 'SOLD', 'BLOCKED');
 
 -- CreateEnum
-CREATE TYPE "SaleStatus" AS ENUM ('ACTIVE', 'CANCELED');
+CREATE TYPE "SaleStatus" AS ENUM ('ACTIVE', 'EXPIRED', 'PAUSED', 'CLOSED');
+
+-- CreateEnum
+CREATE TYPE "RenewalMessageStatus" AS ENUM ('NOT_APPLICABLE', 'PENDING', 'SENT');
 
 -- CreateEnum
 CREATE TYPE "KardexType" AS ENUM ('IN', 'OUT', 'ADJUST');
 
 -- CreateEnum
-CREATE TYPE "KardexRefType" AS ENUM ('ACCOUNT_PURCHASE', 'PROFILE_SALE', 'ACCOUNT_INACTIVATION', 'PROFILE_ADJUST', 'MANUAL_ADJUST');
+CREATE TYPE "KardexRefType" AS ENUM ('ACCOUNT_PURCHASE', 'PROFILE_SALE', 'ACCOUNT_INACTIVATION', 'PROFILE_ADJUST', 'ACCOUNT_RENEWAL', 'ACCOUNT_REPLACEMENT', 'COST_CORRECTION', 'PROFILE_TRANSFER', 'MANUAL_ADJUST');
 
--- AlterEnum
--- This migration adds more than one value to an enum.
--- With PostgreSQL versions 11 and earlier, this is not possible
--- in a single migration. This can be worked around by creating
--- multiple migrations, each migration adding only one value to
--- the enum.
+-- CreateTable
+CREATE TABLE "users" (
+    "id" SERIAL NOT NULL,
+    "email" TEXT NOT NULL,
+    "phone" TEXT NOT NULL,
+    "password_hash" TEXT NOT NULL,
+    "nombre" TEXT NOT NULL,
+    "status" "UserStatus" NOT NULL DEFAULT 'ACTIVE',
+    "base_role" "BaseRole" NOT NULL DEFAULT 'EMPLOYEE',
+    "created_by_user_id" INTEGER,
+    "cascade_inactivated_by_user_id" INTEGER,
+    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updated_at" TIMESTAMP(3) NOT NULL,
 
+    CONSTRAINT "users_pkey" PRIMARY KEY ("id")
+);
 
-ALTER TYPE "PermissionResource" ADD VALUE 'STREAMING_PLATFORMS';
-ALTER TYPE "PermissionResource" ADD VALUE 'STREAMING_ACCOUNTS';
-ALTER TYPE "PermissionResource" ADD VALUE 'STREAMING_SALES';
-ALTER TYPE "PermissionResource" ADD VALUE 'KARDEX';
+-- CreateTable
+CREATE TABLE "companies" (
+    "id" SERIAL NOT NULL,
+    "owner_user_id" INTEGER NOT NULL,
+    "name" TEXT NOT NULL,
+    "phone" TEXT NOT NULL,
+    "status" "CompanyStatus" NOT NULL DEFAULT 'ACTIVE',
+    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updated_at" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "companies_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "company_users" (
+    "id" SERIAL NOT NULL,
+    "company_id" INTEGER NOT NULL,
+    "user_id" INTEGER NOT NULL,
+    "status" "CompanyUserStatus" NOT NULL DEFAULT 'ACTIVE',
+    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updated_at" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "company_users_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "permissions" (
+    "id" SERIAL NOT NULL,
+    "resource" "PermissionResource" NOT NULL,
+    "action" "PermissionAction" NOT NULL,
+    "key" TEXT NOT NULL,
+    "group" TEXT,
+    "label" TEXT,
+    "order" INTEGER,
+    "isSystem" BOOLEAN NOT NULL DEFAULT false,
+    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updated_at" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "permissions_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "user_permissions" (
+    "user_id" INTEGER NOT NULL,
+    "permission_id" INTEGER NOT NULL,
+
+    CONSTRAINT "user_permissions_pkey" PRIMARY KEY ("user_id","permission_id")
+);
+
+-- CreateTable
+CREATE TABLE "suppliers" (
+    "id" SERIAL NOT NULL,
+    "company_id" INTEGER NOT NULL,
+    "name" TEXT NOT NULL,
+    "contact" TEXT NOT NULL,
+    "notes" TEXT,
+    "balance" DECIMAL(12,4) NOT NULL DEFAULT 0,
+    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updated_at" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "suppliers_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "customers" (
+    "id" SERIAL NOT NULL,
+    "company_id" INTEGER NOT NULL,
+    "name" TEXT NOT NULL,
+    "contact" TEXT NOT NULL,
+    "source" "CustomerSource",
+    "source_note" TEXT,
+    "notes" TEXT,
+    "balance" TEXT,
+    "last_purchase_at" TIMESTAMP(3),
+    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updated_at" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "customers_pkey" PRIMARY KEY ("id")
+);
 
 -- CreateTable
 CREATE TABLE "streaming_platforms" (
     "id" SERIAL NOT NULL,
+    "company_id" INTEGER NOT NULL,
     "name" TEXT NOT NULL,
     "active" BOOLEAN NOT NULL DEFAULT true,
     "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -46,11 +155,15 @@ CREATE TABLE "streaming_accounts" (
     "email" TEXT NOT NULL,
     "password" TEXT NOT NULL,
     "profiles_total" INTEGER NOT NULL,
+    "duration_days" INTEGER NOT NULL,
     "purchase_date" TIMESTAMP(3) NOT NULL,
     "cutoff_date" TIMESTAMP(3) NOT NULL,
     "total_cost" DECIMAL(12,4) NOT NULL,
     "notes" TEXT,
     "status" "StreamingAccountStatus" NOT NULL DEFAULT 'ACTIVE',
+    "replaced_by_email" TEXT,
+    "replaced_at" TIMESTAMP(3),
+    "replacement_note" TEXT,
     "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updated_at" TIMESTAMP(3) NOT NULL,
 
@@ -82,8 +195,14 @@ CREATE TABLE "streaming_sales" (
     "days_assigned" INTEGER NOT NULL,
     "cutoff_date" TIMESTAMP(3) NOT NULL,
     "cost_at_sale" DECIMAL(12,4) NOT NULL,
+    "daily_cost" DECIMAL(12,4) NOT NULL,
     "notes" TEXT,
     "status" "SaleStatus" NOT NULL DEFAULT 'ACTIVE',
+    "renewal_status" "RenewalMessageStatus" NOT NULL DEFAULT 'NOT_APPLICABLE',
+    "paused_at" TIMESTAMP(3),
+    "paused_days_left" INTEGER,
+    "credit_amount" DECIMAL(12,4),
+    "credit_refunded" BOOLEAN NOT NULL DEFAULT false,
     "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updated_at" TIMESTAMP(3) NOT NULL,
 
@@ -95,7 +214,7 @@ CREATE TABLE "cost_items" (
     "id" SERIAL NOT NULL,
     "company_id" INTEGER NOT NULL,
     "platform_id" INTEGER NOT NULL,
-    "unit" TEXT NOT NULL DEFAULT 'PROFILE',
+    "unit" TEXT NOT NULL DEFAULT 'PROFILE_DAY',
     "stock" INTEGER NOT NULL DEFAULT 0,
     "avg_cost" DECIMAL(12,4) NOT NULL,
     "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -124,7 +243,58 @@ CREATE TABLE "kardex_movements" (
 );
 
 -- CreateIndex
-CREATE UNIQUE INDEX "streaming_platforms_name_key" ON "streaming_platforms"("name");
+CREATE UNIQUE INDEX "users_email_key" ON "users"("email");
+
+-- CreateIndex
+CREATE INDEX "users_created_by_user_id_idx" ON "users"("created_by_user_id");
+
+-- CreateIndex
+CREATE INDEX "users_base_role_idx" ON "users"("base_role");
+
+-- CreateIndex
+CREATE INDEX "users_status_idx" ON "users"("status");
+
+-- CreateIndex
+CREATE INDEX "companies_owner_user_id_idx" ON "companies"("owner_user_id");
+
+-- CreateIndex
+CREATE INDEX "companies_status_idx" ON "companies"("status");
+
+-- CreateIndex
+CREATE INDEX "company_users_user_id_idx" ON "company_users"("user_id");
+
+-- CreateIndex
+CREATE INDEX "company_users_company_id_idx" ON "company_users"("company_id");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "company_users_company_id_user_id_key" ON "company_users"("company_id", "user_id");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "permissions_key_key" ON "permissions"("key");
+
+-- CreateIndex
+CREATE INDEX "permissions_resource_idx" ON "permissions"("resource");
+
+-- CreateIndex
+CREATE INDEX "user_permissions_permission_id_idx" ON "user_permissions"("permission_id");
+
+-- CreateIndex
+CREATE INDEX "suppliers_company_id_idx" ON "suppliers"("company_id");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "suppliers_company_id_name_key" ON "suppliers"("company_id", "name");
+
+-- CreateIndex
+CREATE INDEX "customers_company_id_idx" ON "customers"("company_id");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "customers_company_id_name_key" ON "customers"("company_id", "name");
+
+-- CreateIndex
+CREATE INDEX "streaming_platforms_company_id_idx" ON "streaming_platforms"("company_id");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "streaming_platforms_company_id_name_key" ON "streaming_platforms"("company_id", "name");
 
 -- CreateIndex
 CREATE INDEX "streaming_accounts_company_id_idx" ON "streaming_accounts"("company_id");
@@ -197,6 +367,36 @@ CREATE INDEX "kardex_movements_account_id_idx" ON "kardex_movements"("account_id
 
 -- CreateIndex
 CREATE INDEX "kardex_movements_sale_id_idx" ON "kardex_movements"("sale_id");
+
+-- AddForeignKey
+ALTER TABLE "users" ADD CONSTRAINT "users_created_by_user_id_fkey" FOREIGN KEY ("created_by_user_id") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "users" ADD CONSTRAINT "users_cascade_inactivated_by_user_id_fkey" FOREIGN KEY ("cascade_inactivated_by_user_id") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "companies" ADD CONSTRAINT "companies_owner_user_id_fkey" FOREIGN KEY ("owner_user_id") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "company_users" ADD CONSTRAINT "company_users_company_id_fkey" FOREIGN KEY ("company_id") REFERENCES "companies"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "company_users" ADD CONSTRAINT "company_users_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "user_permissions" ADD CONSTRAINT "user_permissions_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "user_permissions" ADD CONSTRAINT "user_permissions_permission_id_fkey" FOREIGN KEY ("permission_id") REFERENCES "permissions"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "suppliers" ADD CONSTRAINT "suppliers_company_id_fkey" FOREIGN KEY ("company_id") REFERENCES "companies"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "customers" ADD CONSTRAINT "customers_company_id_fkey" FOREIGN KEY ("company_id") REFERENCES "companies"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "streaming_platforms" ADD CONSTRAINT "streaming_platforms_company_id_fkey" FOREIGN KEY ("company_id") REFERENCES "companies"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "streaming_accounts" ADD CONSTRAINT "streaming_accounts_company_id_fkey" FOREIGN KEY ("company_id") REFERENCES "companies"("id") ON DELETE CASCADE ON UPDATE CASCADE;

@@ -22,9 +22,11 @@ import { KardexModule } from './kardex/kardex.module';
 import { StreamingAccountModule } from './streaming-account/streaming-account.module';
 import { StreamingSalesModule } from './streaming-sales/streaming-sales.module';
 import { ReportsModule } from './reports/reports.module';
+import { ScheduleModule } from '@nestjs/schedule';
 
 @Module({
   imports: [
+    ScheduleModule.forRoot(),
     PrismaModule,
     AuthModule,
     UsersModule,

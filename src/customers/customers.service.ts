@@ -63,9 +63,10 @@ export class CustomersService {
     const where: Prisma.CustomerWhereInput = { companyId };
     if (query.search?.trim()) {
       const term = query.search.trim();
+      const normalizedTerm = term.replace(/\s+/g, '');
       where.OR = [
         { name: { contains: term, mode: 'insensitive' } },
-        { contact: { contains: term, mode: 'insensitive' } },
+        { contact: { contains: normalizedTerm, mode: 'insensitive' } },
       ];
     }
     if (query.source?.trim()) where.source = query.source;
@@ -184,7 +185,7 @@ export class CustomersService {
         data: {
           companyId,
           name: dto.name,
-          contact: dto.contact ?? null,
+          contact: dto.contact?.replace(/\s+/g, '') ?? '',
           source: dto.source ?? null,
           sourceNote: dto.sourceNote ?? null,
           notes: dto.notes ?? null,
@@ -217,7 +218,9 @@ export class CustomersService {
         where: { id },
         data: {
           ...(dto.name !== undefined ? { name: dto.name } : {}),
-          ...(dto.contact !== undefined ? { contact: dto.contact } : {}),
+          ...(dto.contact !== undefined
+            ? { contact: dto.contact.replace(/\s+/g, '') }
+            : {}),
           ...(dto.source !== undefined ? { source: dto.source } : {}),
           ...(dto.sourceNote !== undefined
             ? { sourceNote: dto.sourceNote }

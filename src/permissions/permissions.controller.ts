@@ -70,7 +70,7 @@ export class PermissionsController {
   // -------- Permisos por usuario --------
 
   @Get('users/:userId/permissions')
-  @RequirePermissions('PERMISSIONS:READ')
+  @RequirePermissions('PERMISSIONS-USERS:READ')
   listUserPermissions(
     @Param('userId', ParseIntPipe) userId: number,
     @Req() req: { user: CurrentUserJwt },
@@ -79,7 +79,7 @@ export class PermissionsController {
   }
 
   @Post('users/:userId/permissions/set')
-  @RequirePermissions('PERMISSIONS:UPDATE')
+  @RequirePermissions('PERMISSIONS-USERS:UPDATE')
   setUserPermissions(
     @Param('userId', ParseIntPipe) userId: number,
     @Body() dto: SetUserPermissionsDto,
@@ -89,7 +89,7 @@ export class PermissionsController {
   }
 
   @Post('users/:userId/permissions/add')
-  @RequirePermissions('PERMISSIONS:UPDATE')
+  @RequirePermissions('PERMISSIONS-USERS:UPDATE')
   addUserPermissions(
     @Param('userId', ParseIntPipe) userId: number,
     @Body() dto: PermissionIdsDto,
@@ -99,7 +99,7 @@ export class PermissionsController {
   }
 
   @Delete('users/:userId/permissions/remove')
-  @RequirePermissions('PERMISSIONS:UPDATE')
+  @RequirePermissions('PERMISSIONS-USERS:UPDATE')
   removeUserPermissions(
     @Param('userId', ParseIntPipe) userId: number,
     @Body() dto: PermissionIdsDto,

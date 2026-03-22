@@ -63,7 +63,9 @@ enum CustomerSource {
 
 enum StreamingAccountStatus {
   ACTIVE
+  EXPIRED
   INACTIVE
+  DELETED
 }
 
 enum AccountProfileStatus {
@@ -74,7 +76,15 @@ enum AccountProfileStatus {
 
 enum SaleStatus {
   ACTIVE
-  CANCELED
+  EXPIRED
+  PAUSED
+  CLOSED
+}
+
+enum RenewalMessageStatus {
+  NOT_APPLICABLE
+  PENDING
+  SENT
 }
 
 enum KardexType {
@@ -84,10 +94,14 @@ enum KardexType {
 }
 
 enum KardexRefType {
-  ACCOUNT_PURCHASE     // IN al crear cuenta
-  PROFILE_SALE         // OUT al vender perfil
-  ACCOUNT_INACTIVATION // ADJUST OUT al inactivar cuenta
-  PROFILE_ADJUST       // IN/ADJUST por cambio de profilesTotal
+  ACCOUNT_PURCHASE        // IN al crear cuenta
+  PROFILE_SALE            // OUT al vender perfil
+  ACCOUNT_INACTIVATION    // ADJUST OUT al inactivar cuenta
+  PROFILE_ADJUST          // IN/ADJUST por cambio de profilesTotal
+  ACCOUNT_RENEWAL         // IN al renovar cuenta (nuevos días)
+  ACCOUNT_REPLACEMENT     // ADJUST_OUT cierre cuenta A + IN cuenta B
+  COST_CORRECTION         // ADJUST al corregir totalCost retroactivo
+  PROFILE_TRANSFER    // ← nuevo: traslado de cliente entre cuentas
   MANUAL_ADJUST
 }
 
@@ -182,7 +196,7 @@ model Permission {
   group    String?
   label    String?
   order    Int?
-  isSystem Boolean @default(true)
+  isSystem Boolean @default(false)
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt      @map("updated_at")
@@ -289,6 +303,10 @@ model StreamingAccount {
   notes     String?
   status    StreamingAccountStatus @default(ACTIVE)
 
+  replacedByEmail    String?   @map("replaced_by_email")    // email de la cuenta B
+  replacedAt         DateTime? @map("replaced_at")          // fecha del reemplazo
+  replacementNote    String?   @map("replacement_note")     // nota opcional
+
   company  Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
   platform StreamingPlatform @relation(fields: [platformId], references: [id], onDelete: Restrict)
   supplier Supplier          @relation(fields: [supplierId], references: [id], onDelete: Restrict)
@@ -345,6 +363,12 @@ model StreamingSale {
 
   notes  String?
   status SaleStatus @default(ACTIVE)
+  renewalStatus     RenewalMessageStatus  @default(NOT_APPLICABLE) @map("renewal_status")
+  pausedAt          DateTime?  @map("paused_at")
+  pausedDaysLeft    Int?       @map("paused_days_left")
+
+  creditAmount      Decimal?   @db.Decimal(12, 4) @map("credit_amount")
+  creditRefunded    Boolean    @default(false)     @map("credit_refunded")
 
   company  Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
   platform StreamingPlatform @relation(fields: [platformId], references: [id], onDelete: Restrict)

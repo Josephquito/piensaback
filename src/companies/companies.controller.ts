@@ -65,7 +65,7 @@ export class CompaniesController {
   }
 
   @Get(':id/users')
-  @RequirePermissions('COMPANIES:READ')
+  @RequirePermissions('COMPANIES-USERS:READ')
   listMembers(
     @Param('id', ParseIntPipe) id: number,
     @Req() req: { user: CurrentUserJwt },
@@ -74,7 +74,7 @@ export class CompaniesController {
   }
 
   @Post(':id/users')
-  @RequirePermissions('COMPANIES:UPDATE')
+  @RequirePermissions('COMPANIES-USERS:UPDATE')
   assignEmployees(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: AssignCompanyEmployeesDto,
@@ -84,7 +84,7 @@ export class CompaniesController {
   }
 
   @Delete(':id/users')
-  @RequirePermissions('COMPANIES:UPDATE')
+  @RequirePermissions('COMPANIES-USERS:UPDATE')
   unassignEmployees(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: AssignCompanyEmployeesDto,

@@ -157,6 +157,9 @@ export class UsersService {
   // =======================
   // CREATE
   // =======================
+  // =======================
+  // CREATE
+  // =======================
   async create(dto: CreateUserDto, currentUser: CurrentUserJwt) {
     const actor = await this.getActor(currentUser);
 
@@ -171,7 +174,7 @@ export class UsersService {
     const passwordHash = await bcrypt.hash(dto.password, 10);
     const createdByUserId = this.createdByForNewUser(actor);
 
-    return this.prisma.user.create({
+    const newUser = await this.prisma.user.create({
       data: {
         email: dto.email,
         phone: dto.phone,
@@ -182,6 +185,33 @@ export class UsersService {
         createdByUserId,
       },
       select: this.selectUserPublic(),
+    });
+
+    // Asignar permisos por defecto según el rol creado
+    await this.assignDefaultPermissions(newUser.id, dto.baseRole);
+
+    return newUser;
+  }
+
+  // =======================
+  // PERMISOS POR DEFECTO
+  // =======================
+  private async assignDefaultPermissions(userId: number, role: string) {
+    // SUPERADMIN → se maneja solo en el seed, nunca se crea desde el service
+    // EMPLOYEE   → pendiente definir, por ahora sin permisos
+    if (role !== 'ADMIN') return;
+
+    // Todos los permisos visibles (isSystem: false) se asignan al ADMIN
+    const perms = await this.prisma.permission.findMany({
+      where: { isSystem: false },
+      select: { id: true },
+    });
+
+    if (!perms.length) return;
+
+    await this.prisma.userPermission.createMany({
+      data: perms.map((p) => ({ userId, permissionId: p.id })),
+      skipDuplicates: true,
     });
   }
 
