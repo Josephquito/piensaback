@@ -1,4 +1,8 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { KardexRefType, StreamingAccountStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { KardexService } from '../kardex/kardex.service';
@@ -195,5 +199,45 @@ export class StreamingAccountProfilesService {
     });
 
     return this.accounts.findOne(account.id, companyId);
+  }
+
+  // =========================
+  // ASIGNAR ETIQUETA
+  // =========================
+  async assignLabel(
+    profileId: number,
+    labelId: number | null,
+    companyId: number,
+  ) {
+    // Verifica que el perfil pertenece a la empresa
+    const profile = await this.prisma.accountProfile.findFirst({
+      where: {
+        id: profileId,
+        account: { companyId },
+      },
+      select: { id: true },
+    });
+    if (!profile) throw new NotFoundException('Perfil no encontrado.');
+
+    // Si viene labelId, verifica que pertenece a la empresa
+    if (labelId !== null) {
+      const label = await this.prisma.profileLabel.findFirst({
+        where: { id: labelId, companyId },
+        select: { id: true },
+      });
+      if (!label) throw new NotFoundException('Etiqueta no encontrada.');
+    }
+
+    return this.prisma.accountProfile.update({
+      where: { id: profileId },
+      data: { labelId },
+      select: {
+        id: true,
+        profileNo: true,
+        status: true,
+        labelId: true,
+        label: { select: { id: true, name: true, color: true } },
+      },
+    });
   }
 }

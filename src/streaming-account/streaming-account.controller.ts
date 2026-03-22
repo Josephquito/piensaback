@@ -175,4 +175,18 @@ export class StreamingAccountsController {
   emptyAll(@Param('id', ParseIntPipe) id: number, @Req() req: RequestWithUser) {
     return this.refundService.emptyAll(id, req.companyId!);
   }
+
+  @Patch('profiles/:profileId/label')
+  @RequirePermissions('STREAMING_ACCOUNTS:UPDATE')
+  assignLabel(
+    @Param('profileId', ParseIntPipe) profileId: number,
+    @Body() body: { labelId: number | null },
+    @Req() req: RequestWithUser,
+  ) {
+    return this.profilesService.assignLabel(
+      profileId,
+      body.labelId,
+      req.companyId!,
+    );
+  }
 }

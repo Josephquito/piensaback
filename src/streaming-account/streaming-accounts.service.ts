@@ -36,6 +36,8 @@ export const ACCOUNT_SELECT = {
       id: true,
       profileNo: true,
       status: true,
+      labelId: true,
+      label: { select: { id: true, name: true, color: true } },
       sales: {
         where: { status: { in: ['ACTIVE', 'PAUSED'] as SaleStatus[] } }, // ← SaleStatus[] en vez de as const
         select: { cutoffDate: true, status: true },
