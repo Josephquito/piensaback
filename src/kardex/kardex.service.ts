@@ -97,7 +97,9 @@ export class KardexService {
       where: { companyId_platformId: { companyId, platformId } },
     });
     if (!item) throw new BadRequestException('CostItem no existe.');
-    if (item.stock < qty)
+
+    // Solo valida stock si NO es una venta
+    if (refType !== KardexRefType.PROFILE_SALE && item.stock < qty)
       throw new BadRequestException('Stock insuficiente para la salida.');
 
     const unitCost = item.avgCost;
