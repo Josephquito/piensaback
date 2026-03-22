@@ -139,6 +139,7 @@ export class StreamingImportService {
   // Plantilla descargable
   getTemplate(): Buffer {
     const example = [
+      'Netflix',
       'correo@ejemplo.com',
       'clave123',
       '2026-03-01',
