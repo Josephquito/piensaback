@@ -23,6 +23,7 @@ import { StreamingAccountModule } from './streaming-account/streaming-account.mo
 import { StreamingSalesModule } from './streaming-sales/streaming-sales.module';
 import { ReportsModule } from './reports/reports.module';
 import { ScheduleModule } from '@nestjs/schedule';
+import { StreamingLabelsModule } from './streaming-labels/streaming-labels.module';
 
 @Module({
   imports: [
@@ -41,6 +42,7 @@ import { ScheduleModule } from '@nestjs/schedule';
     StreamingAccountModule,
     StreamingSalesModule,
     ReportsModule,
+    StreamingLabelsModule,
   ],
   controllers: [AppController],
   providers: [

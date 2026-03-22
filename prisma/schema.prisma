@@ -166,6 +166,7 @@ model Company {
   @@index([status])
   @@map("companies")
   streamingPlatforms StreamingPlatform[]
+  profileLabels ProfileLabel[]
 }
 
 model CompanyUser {
@@ -331,11 +332,13 @@ model StreamingAccount {
 model AccountProfile {
   id        Int                  @id @default(autoincrement())
   accountId Int                  @map("account_id")
+  labelId   Int?                 @map("label_id")
 
   profileNo Int                  @map("profile_no")
   status    AccountProfileStatus @default(AVAILABLE)
 
   account StreamingAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  label   ProfileLabel?    @relation(fields: [labelId], references: [id], onDelete: SetNull)
   sales   StreamingSale[]
 
   createdAt DateTime @default(now()) @map("created_at")
@@ -344,8 +347,8 @@ model AccountProfile {
   @@unique([accountId, profileNo])
   @@index([accountId])
   @@index([status])
+  @@index([labelId])
   @@index([accountId, status])
-
   @@map("account_profiles")
 }
 
@@ -460,4 +463,21 @@ model KardexMovement {
   @@index([saleId])
   @@index([companyId, itemId])
   @@map("kardex_movements")
+}
+
+model ProfileLabel {
+  id        Int     @id @default(autoincrement())
+  companyId Int     @map("company_id")
+  name      String 
+  color     String 
+  
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  profiles  AccountProfile[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt      @map("updated_at")
+
+  @@unique([companyId, name])
+  @@index([companyId])
+  @@map("profile_labels")
 }
