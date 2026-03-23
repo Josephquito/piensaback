@@ -35,21 +35,51 @@ export class StreamingImportController {
     res.send(buffer);
   }
 
-  @Post('accounts')
+  // ← endpoint SSE — reemplaza al POST original
+  @Post('accounts/stream')
   @RequirePermissions('STREAMING_ACCOUNTS:CREATE')
   @UseInterceptors(FileInterceptor('file'))
-  importAccounts(
+  async importAccountsStream(
     @UploadedFile() file: Express.Multer.File,
     @Req() req: RequestWithUser,
+    @Res() res: Response,
   ) {
     if (!file) throw new BadRequestException('No se recibió ningún archivo.');
-
     if (
       file.mimetype !== 'text/csv' &&
       !file.originalname.toLowerCase().endsWith('.csv')
     )
       throw new BadRequestException('El archivo debe ser .csv');
 
-    return this.importService.importFromBuffer(file.buffer, req.companyId!);
+    // Headers SSE
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no'); // importante para nginx
+    res.flushHeaders();
+
+    const stream$ = this.importService.importFromBufferStream(
+      file.buffer,
+      req.companyId!,
+    );
+
+    stream$.subscribe({
+      next: (event) => {
+        res.write(`data: ${JSON.stringify(event)}\n\n`);
+        // ← forzar envío inmediato al cliente
+        if (typeof (res as any).flush === 'function') {
+          (res as any).flush();
+        }
+      },
+      error: (err) => {
+        res.write(
+          `data: ${JSON.stringify({ type: 'error', message: err.message })}\n\n`,
+        );
+        res.end();
+      },
+      complete: () => {
+        res.end();
+      },
+    });
   }
 }
