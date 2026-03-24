@@ -319,7 +319,7 @@ export class AccountImporterService {
         });
       }
 
-      // Sin datos de venta → nada más que hacer en este perfil
+      // Sin datos de venta en el CSV → nada más que hacer
       if (
         !p.salePrice ||
         !p.saleDate ||
@@ -329,7 +329,7 @@ export class AccountImporterService {
         continue;
       }
 
-      // Regla 5: cliente debe existir, si no → error (warning duro, perfil queda AVAILABLE)
+      // Resolver cliente (Regla 5)
       const customerId = resolveCustomerId(p.customerName, customerIndex);
       if (!customerId) {
         warnings.push({
@@ -342,11 +342,55 @@ export class AccountImporterService {
         continue;
       }
 
-      // Si el perfil ya está SOLD no creamos venta duplicada
-      if (profile.status === 'SOLD') continue;
-
       const saleCutoffDate = addDays(p.saleDate, p.saleDurationDays);
 
+      if (profile.status === 'SOLD') {
+        // ── Perfil ya vendido: buscar venta activa y actualizar si cambió algo ──
+        const activeSale = await tx.streamingSale.findFirst({
+          where: {
+            profileId: profile.id,
+            status: { in: ['ACTIVE', 'PAUSED'] },
+          },
+          select: {
+            id: true,
+            salePrice: true,
+            saleDate: true,
+            daysAssigned: true,
+            cutoffDate: true,
+            customerId: true,
+          },
+        });
+
+        if (!activeSale) continue; // venta cerrada, no tocar
+
+        const changed =
+          !activeSale.salePrice.equals(p.salePrice) ||
+          activeSale.saleDate.getTime() !== p.saleDate.getTime() ||
+          activeSale.daysAssigned !== p.saleDurationDays ||
+          activeSale.customerId !== customerId;
+
+        if (changed) {
+          await tx.streamingSale.update({
+            where: { id: activeSale.id },
+            data: {
+              salePrice: p.salePrice,
+              saleDate: p.saleDate,
+              daysAssigned: p.saleDurationDays,
+              cutoffDate: saleCutoffDate,
+              customerId,
+            },
+          });
+
+          await tx.customer.update({
+            where: { id: customerId },
+            data: { lastPurchaseAt: p.saleDate },
+          });
+        }
+
+        continue; // venta procesada, no crear una nueva
+      }
+
+      // ── Perfil AVAILABLE: crear venta nueva ────────────────────────────
       const { unitCost: saleDailyCost } = await this.kardex.registerOut(
         {
           companyId,
