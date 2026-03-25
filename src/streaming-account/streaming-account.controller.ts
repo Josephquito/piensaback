@@ -52,6 +52,12 @@ export class StreamingAccountsController {
     return this.service.findAll(req.companyId!, limit ? Number(limit) : 100);
   }
 
+  @Get('profiles/all')
+  @RequirePermissions('STREAMING_ACCOUNTS:READ')
+  findAllProfiles(@Req() req: RequestWithUser) {
+    return this.service.findAllProfiles(req.companyId!);
+  }
+
   @Get(':id')
   @RequirePermissions('STREAMING_ACCOUNTS:READ')
   findOne(@Param('id', ParseIntPipe) id: number, @Req() req: RequestWithUser) {

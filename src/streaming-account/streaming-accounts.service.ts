@@ -312,4 +312,62 @@ export class StreamingAccountsService {
     if (!account) throw new NotFoundException('Cuenta no encontrada.');
     return account;
   }
+
+  async findAllProfiles(companyId: number) {
+    const profiles = await this.prisma.accountProfile.findMany({
+      where: {
+        account: {
+          companyId,
+          status: { not: StreamingAccountStatus.DELETED },
+        },
+      },
+      select: {
+        id: true,
+        profileNo: true,
+        status: true,
+        labelId: true,
+        label: { select: { id: true, name: true, color: true } },
+        account: {
+          select: {
+            id: true,
+            email: true,
+            password: true,
+            cutoffDate: true,
+            status: true,
+            platform: { select: { id: true, name: true } },
+            supplier: { select: { id: true, name: true } },
+          },
+        },
+        sales: {
+          where: { status: { in: [SaleStatus.ACTIVE, SaleStatus.PAUSED] } },
+          select: {
+            id: true,
+            salePrice: true,
+            saleDate: true,
+            daysAssigned: true,
+            cutoffDate: true,
+            costAtSale: true,
+            dailyCost: true,
+            notes: true,
+            status: true,
+            renewalStatus: true,
+            pausedAt: true,
+            pausedDaysLeft: true,
+            creditAmount: true,
+            creditRefunded: true,
+            customer: { select: { id: true, name: true, contact: true } },
+          },
+          orderBy: { createdAt: 'desc' as const },
+          take: 1,
+        },
+      },
+      orderBy: [
+        { account: { platform: { name: 'asc' } } },
+        { account: { email: 'asc' } },
+        { profileNo: 'asc' },
+      ],
+    });
+
+    return profiles;
+  }
 }

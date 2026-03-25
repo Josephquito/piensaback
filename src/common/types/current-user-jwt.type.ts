@@ -1,3 +1,4 @@
+//current-user-jwt.type.ts
 import { BaseRole } from '@prisma/client';
 
 export type CurrentUserJwt = {
