@@ -3,8 +3,9 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma, StreamingAccountStatus } from '@prisma/client';
+import { KardexRefType, Prisma, StreamingAccountStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { KardexService } from '../kardex/kardex.service';
 import { StreamingAccountsService } from './streaming-accounts.service';
 import { UpdateStreamingAccountDto } from './dto/update-streaming-account.dto';
 
@@ -12,124 +13,132 @@ import { UpdateStreamingAccountDto } from './dto/update-streaming-account.dto';
 export class StreamingAccountUpdateService {
   constructor(
     private readonly prisma: PrismaService,
+    private readonly kardex: KardexService,
     private readonly accounts: StreamingAccountsService,
   ) {}
 
   async update(id: number, dto: UpdateStreamingAccountDto, companyId: number) {
+    // --- Rechazar campos prohibidos ---
+    if ('totalCost' in dto)
+      throw new BadRequestException(
+        'El costo de la cuenta se corrige por el servicio de corrección de costo.',
+      );
+    if ('cutoffDate' in dto)
+      throw new BadRequestException(
+        'La fecha de corte se recalcula automáticamente desde purchaseDate y durationDays.',
+      );
+
     const account = await this.accounts.findAndAssert(id, companyId);
 
-    if (dto.platformId !== undefined) {
-      const p = await this.prisma.streamingPlatform.findFirst({
-        where: { id: dto.platformId, companyId },
-        select: { id: true },
-      });
-      if (!p) throw new NotFoundException('Plataforma no accesible.');
-    }
-
-    if (dto.supplierId !== undefined) {
-      const s = await this.prisma.supplier.findFirst({
-        where: { id: dto.supplierId, companyId },
-        select: { id: true },
-      });
-      if (!s) throw new NotFoundException('Proveedor no accesible.');
-    }
-
+    // --- Validar status ---
     if (dto.status === StreamingAccountStatus.EXPIRED)
       throw new BadRequestException(
         'No se puede cambiar manualmente a Expirada. Cambia la fecha de corte.',
       );
-
     if (dto.status === StreamingAccountStatus.DELETED)
       throw new BadRequestException(
         'No se puede cambiar manualmente a Eliminada.',
       );
 
+    // --- Resolver valores efectivos ---
     const oldSupplierId = account.supplierId;
     const newSupplierId = dto.supplierId ?? oldSupplierId;
-    const oldCost = account.totalCost;
-    const newCost =
-      dto.totalCost !== undefined
-        ? this.accounts.parseDecimal(dto.totalCost, 'totalCost')
-        : oldCost;
+    const newDurationDays = dto.durationDays ?? account.durationDays;
+    const newProfilesTotal = account.profilesTotal; // perfiles solo por ProfilesService
 
-    const data: Prisma.StreamingAccountUpdateInput = {};
+    // cutoffDate siempre se deriva de purchaseDate + durationDays
+    const newPurchaseDate =
+      dto.purchaseDate !== undefined
+        ? this.accounts.parseDate(dto.purchaseDate, 'purchaseDate')
+        : account.purchaseDate;
+
+    const newCutoffDate = new Date(
+      Date.UTC(
+        newPurchaseDate.getUTCFullYear(),
+        newPurchaseDate.getUTCMonth(),
+        newPurchaseDate.getUTCDate() + newDurationDays,
+      ),
+    );
+
+    // ¿cambia algo que afecta al kardex?
+    const daysChanged =
+      dto.durationDays !== undefined &&
+      dto.durationDays !== account.durationDays;
+
+    // dailyCost actual y nuevo (solo cambia si cambia durationDays)
+    const newDailyCost = this.accounts.calcDailyCost(
+      account.totalCost,
+      newProfilesTotal,
+      newDurationDays,
+    );
+
+    // --- Construir data de update ---
+    const data: Prisma.StreamingAccountUpdateInput = {
+      cutoffDate: newCutoffDate, // siempre se recalcula
+    };
     if (dto.email !== undefined) data.email = dto.email.trim();
     if (dto.password !== undefined) data.password = dto.password;
     if (dto.notes !== undefined) data.notes = dto.notes ?? null;
-    if (dto.purchaseDate !== undefined)
-      data.purchaseDate = this.accounts.parseDate(
-        dto.purchaseDate,
-        'purchaseDate',
-      );
-    if (dto.cutoffDate !== undefined)
-      data.cutoffDate = this.accounts.parseDate(dto.cutoffDate, 'cutoffDate');
-    if (dto.totalCost !== undefined) data.totalCost = newCost;
-    if (dto.durationDays !== undefined) data.durationDays = dto.durationDays;
+    if (dto.purchaseDate !== undefined) data.purchaseDate = newPurchaseDate;
+    if (dto.durationDays !== undefined) data.durationDays = newDurationDays;
     if (dto.platformId !== undefined)
       data.platform = { connect: { id: dto.platformId } };
     if (dto.supplierId !== undefined)
       data.supplier = { connect: { id: dto.supplierId } };
 
-    // Recalcular cutoffDate si cambia purchaseDate pero no se envía cutoffDate
-    let effectiveCutoffDate = dto.cutoffDate;
-    if (dto.purchaseDate !== undefined && dto.cutoffDate === undefined) {
-      const newPurchaseDate = this.accounts.parseDate(
-        dto.purchaseDate,
-        'purchaseDate',
-      );
-      const cutoff = new Date(
-        Date.UTC(
-          newPurchaseDate.getUTCFullYear(),
-          newPurchaseDate.getUTCMonth(),
-          newPurchaseDate.getUTCDate() + account.durationDays,
-        ),
-      );
-      data.cutoffDate = cutoff;
-      effectiveCutoffDate = cutoff.toISOString().split('T')[0];
-    }
+    return this.prisma.$transaction(async (tx) => {
+      // 1) Validar platform y supplier dentro de la tx
+      if (dto.platformId !== undefined) {
+        const p = await tx.streamingPlatform.findFirst({
+          where: { id: dto.platformId, companyId },
+          select: { id: true },
+        });
+        if (!p) throw new NotFoundException('Plataforma no accesible.');
+      }
 
-    await this.prisma.$transaction(async (tx) => {
-      // 1) Balance proveedor
+      if (dto.supplierId !== undefined) {
+        const s = await tx.supplier.findFirst({
+          where: { id: dto.supplierId, companyId },
+          select: { id: true },
+        });
+        if (!s) throw new NotFoundException('Proveedor no accesible.');
+      }
+
+      // 2) Balance proveedor si cambia supplierId
+      // totalCost no cambia aquí, solo se reasigna a quién se le debe
       if (oldSupplierId !== newSupplierId) {
         await tx.supplier.update({
           where: { id: oldSupplierId },
-          data: { balance: { increment: oldCost } },
+          data: { balance: { increment: account.totalCost } },
         });
         await tx.supplier.update({
           where: { id: newSupplierId },
-          data: { balance: { decrement: newCost } },
-        });
-      } else if (dto.totalCost !== undefined) {
-        const delta = newCost.sub(oldCost);
-        await tx.supplier.update({
-          where: { id: oldSupplierId },
-          data: { balance: { decrement: delta } },
+          data: { balance: { decrement: account.totalCost } },
         });
       }
 
-      // 2) Update cuenta
-      try {
-        // Si cambia el email, liberar conflicto con cuentas DELETED
-        if (dto.email !== undefined) {
-          const conflict = await tx.streamingAccount.findFirst({
-            where: {
-              companyId,
-              platformId: dto.platformId ?? account.platformId,
-              email: dto.email.trim(),
-              status: StreamingAccountStatus.DELETED,
-              id: { not: account.id },
-            },
-            select: { id: true },
+      // 3) Liberar conflicto de email con cuentas DELETED
+      if (dto.email !== undefined) {
+        const conflict = await tx.streamingAccount.findFirst({
+          where: {
+            companyId,
+            platformId: dto.platformId ?? account.platformId,
+            email: dto.email.trim(),
+            status: StreamingAccountStatus.DELETED,
+            id: { not: account.id },
+          },
+          select: { id: true },
+        });
+        if (conflict) {
+          await tx.streamingAccount.update({
+            where: { id: conflict.id },
+            data: { email: `__deleted_${conflict.id}__${dto.email.trim()}` },
           });
-
-          if (conflict) {
-            await tx.streamingAccount.update({
-              where: { id: conflict.id },
-              data: { email: `__deleted_${conflict.id}__${dto.email.trim()}` },
-            });
-          }
         }
+      }
 
+      // 4) Update cuenta
+      try {
         await tx.streamingAccount.update({
           where: { id: account.id },
           data,
@@ -142,34 +151,46 @@ export class StreamingAccountUpdateService {
         throw e;
       }
 
-      // 3) Recalcular status según cutoffDate
-      if (effectiveCutoffDate !== undefined || dto.purchaseDate !== undefined) {
-        const cutoffToCheck = effectiveCutoffDate
-          ? this.accounts.parseDate(effectiveCutoffDate, 'cutoffDate')
-          : account.cutoffDate;
+      // 5) Recalcular status según nueva cutoffDate
+      const expired = this.accounts.isExpired(newCutoffDate);
+      const currentStatus =
+        (data.status as StreamingAccountStatus) ?? account.status;
 
-        const expired = this.accounts.isExpired(cutoffToCheck);
-        const currentStatus = data.status ?? account.status;
+      if (
+        expired &&
+        currentStatus !== StreamingAccountStatus.EXPIRED &&
+        currentStatus !== StreamingAccountStatus.DELETED &&
+        currentStatus !== StreamingAccountStatus.INACTIVE
+      ) {
+        await tx.streamingAccount.update({
+          where: { id: account.id },
+          data: { status: StreamingAccountStatus.EXPIRED },
+        });
+      } else if (
+        !expired &&
+        account.status === StreamingAccountStatus.EXPIRED
+      ) {
+        await tx.streamingAccount.update({
+          where: { id: account.id },
+          data: { status: StreamingAccountStatus.ACTIVE },
+        });
+      }
 
-        if (
-          expired &&
-          currentStatus !== StreamingAccountStatus.EXPIRED &&
-          currentStatus !== StreamingAccountStatus.DELETED &&
-          currentStatus !== StreamingAccountStatus.INACTIVE
-        ) {
-          await tx.streamingAccount.update({
-            where: { id: account.id },
-            data: { status: StreamingAccountStatus.EXPIRED },
-          });
-        } else if (
-          !expired &&
-          account.status === StreamingAccountStatus.EXPIRED
-        ) {
-          await tx.streamingAccount.update({
-            where: { id: account.id },
-            data: { status: StreamingAccountStatus.ACTIVE },
-          });
-        }
+      // 6) Recalcular kardex si cambió durationDays
+      // recalculateStock cierra el stock actual y abre uno nuevo con
+      // profilesTotal * nuevoDurationDays al nuevo dailyCost
+      if (daysChanged) {
+        await this.kardex.recalculateStock(
+          {
+            companyId,
+            platformId: account.platformId,
+            newQty: newProfilesTotal * newDurationDays,
+            newDailyCost,
+            refType: KardexRefType.ACCOUNT_UPDATE,
+            accountId: account.id,
+          },
+          tx,
+        );
       }
     });
 

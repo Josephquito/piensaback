@@ -103,6 +103,9 @@ enum KardexRefType {
   COST_CORRECTION         // ADJUST al corregir totalCost retroactivo
   PROFILE_TRANSFER    // ← nuevo: traslado de cliente entre cuentas
   MANUAL_ADJUST
+  ACCOUNT_REACTIVATION
+  ACCOUNT_DELETION
+  ACCOUNT_UPDATE
 }
 
 // =======================

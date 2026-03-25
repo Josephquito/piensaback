@@ -18,24 +18,6 @@ export class StreamingAccountReplacementService {
     private readonly accounts: StreamingAccountsService,
   ) {}
 
-  private daysRemainingByDate(cutoffDate: Date): number {
-    const now = new Date();
-    const cutoff = new Date(
-      Date.UTC(
-        cutoffDate.getUTCFullYear(),
-        cutoffDate.getUTCMonth(),
-        cutoffDate.getUTCDate(),
-      ),
-    );
-    const today = new Date(
-      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
-    );
-    return Math.max(
-      0,
-      Math.ceil((cutoff.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)),
-    );
-  }
-
   // =========================
   // CASO 1 — Credenciales nuevas sin costo
   // =========================
@@ -74,11 +56,19 @@ export class StreamingAccountReplacementService {
       dto.purchaseDate,
       'purchaseDate',
     );
-    const newCutoffDate = this.accounts.parseDate(dto.cutoffDate, 'cutoffDate');
     const newTotalCost = this.accounts.parseDecimal(dto.totalCost, 'totalCost');
 
     if (!Number.isInteger(dto.durationDays) || dto.durationDays <= 0)
       throw new BadRequestException('durationDays inválido.');
+
+    // cutoffDate siempre derivado — nunca aceptar del DTO
+    const newCutoffDate = new Date(
+      Date.UTC(
+        newPurchaseDate.getUTCFullYear(),
+        newPurchaseDate.getUTCMonth(),
+        newPurchaseDate.getUTCDate() + dto.durationDays,
+      ),
+    );
 
     const newDailyCost = this.accounts.calcDailyCost(
       newTotalCost,
@@ -100,13 +90,13 @@ export class StreamingAccountReplacementService {
     });
 
     const soldDaysToTransfer = activeSales.reduce((acc, sale) => {
-      return acc + this.daysRemainingByDate(sale.cutoffDate);
+      return acc + this.accounts.daysRemainingByDate(sale.cutoffDate);
     }, 0);
 
     const oldEmail = account.email;
 
     await this.prisma.$transaction(async (tx) => {
-      // 1) ADJUST_OUT — cierra todo el stock actual de la plataforma
+      // 1) ADJUST_OUT — cierra todo el stock actual (días perdidos de A)
       if (currentStock !== 0) {
         await this.kardex.registerAdjustOut(
           {
@@ -121,13 +111,12 @@ export class StreamingAccountReplacementService {
         );
       }
 
-      // 2) IN — todos los perfiles × días de B
-      const qtyNewTotal = account.profilesTotal * dto.durationDays;
+      // 2) IN — todos los perfiles × días de la cuenta nueva
       await this.kardex.registerIn(
         {
           companyId,
           platformId: account.platformId,
-          qty: qtyNewTotal,
+          qty: account.profilesTotal * dto.durationDays,
           unitCost: newDailyCost,
           refType: KardexRefType.ACCOUNT_REPLACEMENT,
           accountId: account.id,
@@ -135,7 +124,7 @@ export class StreamingAccountReplacementService {
         tx,
       );
 
-      // 3) OUT — consume días de ventas activas que se transfieren
+      // 3) OUT — consume días de ventas activas que se transfieren a la nueva cuenta
       if (soldDaysToTransfer > 0) {
         await this.kardex.registerOut(
           {
@@ -149,13 +138,13 @@ export class StreamingAccountReplacementService {
         );
       }
 
-      // 4) Balance proveedor — descuenta nuevo costo
+      // 4) Balance proveedor — descuenta el costo de la cuenta nueva
       await tx.supplier.update({
         where: { id: account.supplierId },
         data: { balance: { decrement: newTotalCost } },
       });
 
-      // 5) Actualiza cuenta con datos de B
+      // 5) Actualizar cuenta con datos de la nueva
       await tx.streamingAccount.update({
         where: { id: account.id },
         data: {
@@ -219,8 +208,8 @@ export class StreamingAccountReplacementService {
         `La cuenta B solo tiene ${availableProfilesB.length} perfiles disponibles y se necesitan ${soldProfilesA.length}.`,
       );
 
-    const daysLeftA = this.daysRemainingByDate(accountA.cutoffDate);
-    const daysLeftB = this.daysRemainingByDate(accountB.cutoffDate);
+    const daysLeftA = this.accounts.daysRemainingByDate(accountA.cutoffDate);
+    const daysLeftB = this.accounts.daysRemainingByDate(accountB.cutoffDate);
 
     const availableCountA = await this.prisma.accountProfile.count({
       where: { accountId: accountA.id, status: 'AVAILABLE' },
@@ -232,11 +221,11 @@ export class StreamingAccountReplacementService {
     });
 
     const soldDaysA = activeSalesA.reduce((acc, sale) => {
-      return acc + this.daysRemainingByDate(sale.cutoffDate);
+      return acc + this.accounts.daysRemainingByDate(sale.cutoffDate);
     }, 0);
 
     await this.prisma.$transaction(async (tx) => {
-      // 1) ADJUST_OUT en kardex de A — cierra días disponibles restantes
+      // 1) ADJUST_OUT en A — días disponibles que se pierden
       const qtyCloseA = availableCountA * daysLeftA;
       if (qtyCloseA > 0) {
         await this.kardex.registerAdjustOut(
@@ -252,7 +241,7 @@ export class StreamingAccountReplacementService {
         );
       }
 
-      // 2) ADJUST_OUT en kardex de A — cierra días de ventas activas que migran
+      // 2) ADJUST_OUT en A — días de ventas activas que se pierden de A
       if (soldDaysA > 0) {
         await this.kardex.registerAdjustOut(
           {
@@ -267,7 +256,9 @@ export class StreamingAccountReplacementService {
         );
       }
 
-      // 3) ADJUST_OUT en kardex de B — perfiles que migran ya no estarán disponibles
+      // 3) ADJUST_OUT en B — días restantes de los perfiles que absorben
+      // las ventas migradas. Esos días se pierden porque el perfil
+      // pasa a estar ocupado por un cliente que venía de A
       const qtyCloseB = soldProfilesA.length * daysLeftB;
       if (qtyCloseB > 0) {
         await this.kardex.registerAdjustOut(

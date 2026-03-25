@@ -16,25 +16,6 @@ export class StreamingAccountDeletionService {
     private readonly accounts: StreamingAccountsService,
   ) {}
 
-  // Calcula daysLeft con comparación por fecha
-  private daysRemainingByDate(cutoffDate: Date): number {
-    const now = new Date();
-    const cutoff = new Date(
-      Date.UTC(
-        cutoffDate.getUTCFullYear(),
-        cutoffDate.getUTCMonth(),
-        cutoffDate.getUTCDate(),
-      ),
-    );
-    const today = new Date(
-      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
-    );
-    return Math.max(
-      0,
-      Math.ceil((cutoff.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)),
-    );
-  }
-
   async remove(id: number, companyId: number) {
     const account = await this.accounts.findAndAssert(id, companyId);
 
@@ -43,6 +24,7 @@ export class StreamingAccountDeletionService {
 
     const now = new Date();
 
+    // Bloquear eliminación si hay ventas vigentes con clientes activos
     const activeSales = await this.prisma.streamingSale.count({
       where: {
         accountId: account.id,
@@ -56,10 +38,12 @@ export class StreamingAccountDeletionService {
         `No se puede eliminar: hay ${activeSales} perfiles con ventas vigentes.`,
       );
 
-    const daysLeft = this.daysRemainingByDate(account.cutoffDate);
+    const daysLeft = this.accounts.daysRemainingByDate(account.cutoffDate);
 
     await this.prisma.$transaction(async (tx) => {
-      // 1) Vaciar ventas ACTIVE y EXPIRED vencidas
+      // 1) Cerrar ventas vencidas que quedaron en ACTIVE o EXPIRED
+      // Estos perfiles pasan a AVAILABLE para que el conteo del paso 2
+      // refleje el estado real al momento de eliminar
       const expiredSales = await tx.streamingSale.findMany({
         where: {
           accountId: account.id,
@@ -80,25 +64,28 @@ export class StreamingAccountDeletionService {
         });
       }
 
-      // 2) Ajuste kardex — solo perfiles que YA eran AVAILABLE antes del paso 1
-      const originalAvailableCount = await tx.accountProfile.count({
+      // 2) Ajuste kardex — todos los perfiles AVAILABLE después del paso 1
+      // Incluye los que ya eran AVAILABLE y los que se liberaron de ventas
+      // vencidas, porque todos representan días que ya no estarán en inventario.
+      // Los perfiles BLOCKED (cuenta inactiva) también se ajustan porque
+      // al eliminar la cuenta esos días desaparecen del negocio.
+      const availableAndBlockedCount = await tx.accountProfile.count({
         where: {
           accountId: account.id,
-          status: 'AVAILABLE',
-          id: { notIn: expiredSales.map((s) => s.profileId) },
+          status: { in: ['AVAILABLE', 'BLOCKED'] },
         },
       });
 
-      const qtyToAdjust = originalAvailableCount * daysLeft;
+      const qtyToAdjust = availableAndBlockedCount * daysLeft;
       if (qtyToAdjust > 0) {
         await this.kardex.registerAdjustOut(
           {
             companyId,
             platformId: account.platformId,
             qty: qtyToAdjust,
-            refType: KardexRefType.ACCOUNT_INACTIVATION,
+            refType: KardexRefType.ACCOUNT_DELETION,
             accountId: account.id,
-            allowNegative: true, // ← permite negativo
+            allowNegative: true,
           },
           tx,
         );

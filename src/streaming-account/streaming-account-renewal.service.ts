@@ -23,11 +23,19 @@ export class StreamingAccountRenewalService {
       dto.purchaseDate,
       'purchaseDate',
     );
-    const newCutoffDate = this.accounts.parseDate(dto.cutoffDate, 'cutoffDate');
     const newTotalCost = this.accounts.parseDecimal(dto.totalCost, 'totalCost');
 
     if (!Number.isInteger(dto.durationDays) || dto.durationDays <= 0)
       throw new BadRequestException('durationDays inválido.');
+
+    // cutoffDate siempre derivado — nunca aceptar del DTO
+    const newCutoffDate = new Date(
+      Date.UTC(
+        newPurchaseDate.getUTCFullYear(),
+        newPurchaseDate.getUTCMonth(),
+        newPurchaseDate.getUTCDate() + dto.durationDays,
+      ),
+    );
 
     const dailyCost = this.accounts.calcDailyCost(
       newTotalCost,
@@ -58,7 +66,19 @@ export class StreamingAccountRenewalService {
         data: { balance: { decrement: newTotalCost } },
       });
 
-      // 3) Kardex IN
+      // 3) Limpiar stock positivo residual antes del IN
+      // Stock negativo se respeta — son ventas anticipadas válidas
+      await this.kardex.resetStock(
+        {
+          companyId,
+          platformId: account.platformId,
+          refType: KardexRefType.ACCOUNT_RENEWAL,
+          accountId: account.id,
+        },
+        tx,
+      );
+
+      // 4) Kardex IN con los nuevos parámetros
       await this.kardex.registerIn(
         {
           companyId,

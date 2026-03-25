@@ -22,8 +22,8 @@ export class StreamingAccountProfilesService {
   async addProfile(id: number, companyId: number) {
     const account = await this.accounts.findAndAssert(id, companyId);
     const newTotal = account.profilesTotal + 1;
-    const daysLeft = this.accounts.daysRemainingByDate(account.cutoffDate);
 
+    // dailyCost se recalcula sobre el nuevo total de perfiles
     const newDailyCost = this.accounts.calcDailyCost(
       account.totalCost,
       newTotal,
@@ -44,19 +44,20 @@ export class StreamingAccountProfilesService {
         data: { profilesTotal: newTotal },
       });
 
-      if (daysLeft > 0) {
-        await this.kardex.registerIn(
-          {
-            companyId,
-            platformId: account.platformId,
-            qty: daysLeft,
-            unitCost: newDailyCost,
-            refType: KardexRefType.PROFILE_ADJUST,
-            accountId: account.id,
-          },
-          tx,
-        );
-      }
+      // recalculateStock cierra el stock actual y abre uno nuevo con
+      // newTotal * durationDays al newDailyCost correcto.
+      // Así el avgCost queda limpio sin mezclar valuaciones distintas.
+      await this.kardex.recalculateStock(
+        {
+          companyId,
+          platformId: account.platformId,
+          newQty: newTotal * account.durationDays,
+          newDailyCost,
+          refType: KardexRefType.PROFILE_ADJUST,
+          accountId: account.id,
+        },
+        tx,
+      );
     });
 
     return this.accounts.findOne(account.id, companyId);
@@ -69,6 +70,9 @@ export class StreamingAccountProfilesService {
     const account = await this.accounts.findAndAssert(id, companyId);
     const newTotal = account.profilesTotal - 1;
 
+    if (newTotal < 0)
+      throw new BadRequestException('La cuenta no tiene perfiles.');
+
     const soldCount = await this.prisma.accountProfile.count({
       where: { accountId: account.id, status: 'SOLD' },
     });
@@ -78,8 +82,7 @@ export class StreamingAccountProfilesService {
         'No se puede reducir: todos los perfiles están vendidos.',
       );
 
-    const daysLeft = this.accounts.daysRemainingByDate(account.cutoffDate);
-
+    // dailyCost se recalcula sobre el nuevo total de perfiles
     const newDailyCost = this.accounts.calcDailyCost(
       account.totalCost,
       newTotal,
@@ -105,16 +108,28 @@ export class StreamingAccountProfilesService {
         data: { profilesTotal: newTotal },
       });
 
-      if (daysLeft > 0) {
-        await this.kardex.registerAdjustOut(
+      // Igual que addProfile: recalculateStock para mantener avgCost limpio.
+      // Si newTotal es 0, no hay días que registrar.
+      if (newTotal > 0) {
+        await this.kardex.recalculateStock(
           {
             companyId,
             platformId: account.platformId,
-            qty: daysLeft,
-            unitCost: newDailyCost,
+            newQty: newTotal * account.durationDays,
+            newDailyCost,
             refType: KardexRefType.PROFILE_ADJUST,
             accountId: account.id,
-            allowNegative: true, // ← permite negativo
+          },
+          tx,
+        );
+      } else {
+        // Si quedaron cero perfiles, simplemente cerrar el stock
+        await this.kardex.resetStock(
+          {
+            companyId,
+            platformId: account.platformId,
+            refType: KardexRefType.PROFILE_ADJUST,
+            accountId: account.id,
           },
           tx,
         );
@@ -147,6 +162,8 @@ export class StreamingAccountProfilesService {
           data: { status: 'BLOCKED' },
         });
 
+        // Solo ajustamos los días de perfiles disponibles que se bloquean.
+        // Los perfiles SOLD siguen activos — sus días siguen en kardex como OUT.
         const qtyToAdjust = availableProfiles.length * daysLeft;
         if (qtyToAdjust > 0) {
           await this.kardex.registerAdjustOut(
@@ -156,7 +173,7 @@ export class StreamingAccountProfilesService {
               qty: qtyToAdjust,
               refType: KardexRefType.ACCOUNT_INACTIVATION,
               accountId: account.id,
-              allowNegative: true, // ← permite negativo
+              allowNegative: true,
             },
             tx,
           );
@@ -186,11 +203,42 @@ export class StreamingAccountProfilesService {
         'No se puede reactivar: la cuenta está vencida. Renuévala primero.',
       );
 
+    const daysLeft = this.accounts.daysRemainingByDate(account.cutoffDate);
+    const dailyCost = this.accounts.calcDailyCost(
+      account.totalCost,
+      account.profilesTotal,
+      account.durationDays,
+    );
+
     await this.prisma.$transaction(async (tx) => {
-      await tx.accountProfile.updateMany({
+      const blockedProfiles = await tx.accountProfile.findMany({
         where: { accountId: account.id, status: 'BLOCKED' },
-        data: { status: 'AVAILABLE' },
+        select: { id: true },
       });
+
+      if (blockedProfiles.length > 0) {
+        await tx.accountProfile.updateMany({
+          where: { accountId: account.id, status: 'BLOCKED' },
+          data: { status: 'AVAILABLE' },
+        });
+
+        // Restaurar los días que se habían ajustado al inactivar.
+        // Solo si quedan días reales — si la cuenta vence hoy, daysLeft = 0.
+        const qtyToRestore = blockedProfiles.length * daysLeft;
+        if (qtyToRestore > 0) {
+          await this.kardex.registerIn(
+            {
+              companyId,
+              platformId: account.platformId,
+              qty: qtyToRestore,
+              unitCost: dailyCost,
+              refType: KardexRefType.ACCOUNT_REACTIVATION,
+              accountId: account.id,
+            },
+            tx,
+          );
+        }
+      }
 
       await tx.streamingAccount.update({
         where: { id: account.id },

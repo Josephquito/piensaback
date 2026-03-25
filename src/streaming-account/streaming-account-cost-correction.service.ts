@@ -37,76 +37,54 @@ export class StreamingAccountCostCorrectionService {
       account.durationDays,
     );
 
+    // Si dailyCost no cambia (caso raro pero posible por redondeo decimal)
+    // igual se actualiza el totalCost y el balance del proveedor
+    const dailyCostChanged = !newDailyCost.equals(oldDailyCost);
+
+    const costDelta = newTotalCost.sub(oldTotalCost);
+
+    // Traer ventas fuera de la tx para no alargarla innecesariamente
     const sales = await this.prisma.streamingSale.findMany({
       where: { accountId: account.id, companyId },
       select: {
         id: true,
         daysAssigned: true,
-        dailyCost: true,
-        costAtSale: true,
-        status: true,
       },
     });
 
-    const costDelta = newTotalCost.sub(oldTotalCost);
-    const dailyCostDelta = newDailyCost.sub(oldDailyCost);
-
     await this.prisma.$transaction(async (tx) => {
-      // 1) Recalcular costAtSale y dailyCost de todas las ventas
-      for (const sale of sales) {
-        const newCostAtSale = newDailyCost.mul(sale.daysAssigned);
-        await tx.streamingSale.update({
-          where: { id: sale.id },
-          data: {
-            dailyCost: newDailyCost,
-            costAtSale: newCostAtSale,
-          },
-        });
-      }
-
-      // 2) Ajuste kardex sobre el stock real actual
-      if (!dailyCostDelta.isZero()) {
-        const costItem = await tx.costItem.findUnique({
-          where: {
-            companyId_platformId: { companyId, platformId: account.platformId },
-          },
-          select: { stock: true },
-        });
-
-        const currentStock = costItem?.stock ?? 0;
-
-        if (currentStock !== 0) {
-          if (dailyCostDelta.greaterThan(0)) {
-            // costo subió — IN por la diferencia sobre el stock actual
-            await this.kardex.registerIn(
-              {
-                companyId,
-                platformId: account.platformId,
-                qty: Math.abs(currentStock), // ← abs por si es negativo
-                unitCost: dailyCostDelta,
-                refType: KardexRefType.COST_CORRECTION,
-                accountId: account.id,
-              },
-              tx,
-            );
-          } else {
-            // costo bajó — ADJUST_OUT sobre el stock actual
-            await this.kardex.registerAdjustOut(
-              {
-                companyId,
-                platformId: account.platformId,
-                qty: Math.abs(currentStock), // ← abs por si es negativo
-                refType: KardexRefType.COST_CORRECTION,
-                accountId: account.id,
-                allowNegative: true, // ← permite negativo
-              },
-              tx,
-            );
-          }
+      // 1) Recalcular costAtSale y dailyCost de todas las ventas de esta cuenta
+      if (dailyCostChanged && sales.length > 0) {
+        for (const sale of sales) {
+          await tx.streamingSale.update({
+            where: { id: sale.id },
+            data: {
+              dailyCost: newDailyCost,
+              costAtSale: newDailyCost.mul(sale.daysAssigned),
+            },
+          });
         }
       }
 
-      // 3) Balance proveedor — ajusta la diferencia
+      // 2) Corrección de costo promedio en kardex sin mover stock
+      // registerCostCorrection actualiza avgCost en CostItem y registra
+      // el movimiento con qty = stock actual y totalCost = delta de valoración
+      if (dailyCostChanged) {
+        await this.kardex.registerCostCorrection(
+          {
+            companyId,
+            platformId: account.platformId,
+            newAvgCost: newDailyCost,
+            refType: KardexRefType.COST_CORRECTION,
+            accountId: account.id,
+          },
+          tx,
+        );
+      }
+
+      // 3) Balance proveedor — ajusta solo la diferencia
+      // costDelta positivo = costo subió = proveedor debe más = decrement
+      // costDelta negativo = costo bajó = proveedor debe menos = increment (decrement negativo)
       await tx.supplier.update({
         where: { id: account.supplierId },
         data: { balance: { decrement: costDelta } },

@@ -153,18 +153,6 @@ export class StreamingAccountsService {
   // CREATE
   // =========================
   async create(dto: CreateStreamingAccountDto, companyId: number) {
-    const platform = await this.prisma.streamingPlatform.findFirst({
-      where: { id: dto.platformId, companyId },
-      select: { id: true },
-    });
-    if (!platform) throw new NotFoundException('Plataforma no accesible.');
-
-    const supplier = await this.prisma.supplier.findFirst({
-      where: { id: dto.supplierId, companyId },
-      select: { id: true },
-    });
-    if (!supplier) throw new NotFoundException('Proveedor no accesible.');
-
     const purchaseDate = this.parseDate(dto.purchaseDate, 'purchaseDate');
     const cutoffDate = this.parseDate(dto.cutoffDate, 'cutoffDate');
     const totalCost = this.parseDecimal(dto.totalCost, 'totalCost');
@@ -176,6 +164,19 @@ export class StreamingAccountsService {
     );
 
     return this.prisma.$transaction(async (tx) => {
+      // Validaciones dentro de la transacción para evitar race conditions
+      const platform = await tx.streamingPlatform.findFirst({
+        where: { id: dto.platformId, companyId },
+        select: { id: true },
+      });
+      if (!platform) throw new NotFoundException('Plataforma no accesible.');
+
+      const supplier = await tx.supplier.findFirst({
+        where: { id: dto.supplierId, companyId },
+        select: { id: true },
+      });
+      if (!supplier) throw new NotFoundException('Proveedor no accesible.');
+
       // Buscar si existe una cuenta DELETED con el mismo email+plataforma+empresa
       const deleted = await tx.streamingAccount.findFirst({
         where: {
@@ -217,6 +218,18 @@ export class StreamingAccountsService {
             status: 'AVAILABLE' as const,
           })),
         });
+
+        // Limpiar stock residual positivo en kardex antes del nuevo IN.
+        // Stock negativo se respeta: puede haber ventas anticipadas válidas.
+        await this.kardex.resetStock(
+          {
+            companyId,
+            platformId: dto.platformId,
+            refType: KardexRefType.ACCOUNT_REACTIVATION,
+            accountId: deleted.id,
+          },
+          tx,
+        );
 
         accountId = deleted.id;
       } else {
