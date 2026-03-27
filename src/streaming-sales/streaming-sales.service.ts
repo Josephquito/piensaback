@@ -76,12 +76,11 @@ export class StreamingSalesService {
   }
 
   // Calcula días restantes comparando solo fechas UTC
-  daysRemaining(cutoffDate: Date): number {
-    return this.daysRemainingByDate(cutoffDate);
+  daysRemaining(cutoffDate: Date, today: Date): number {
+    return this.daysRemainingByDate(cutoffDate, today);
   }
 
-  private daysRemainingByDate(cutoffDate: Date): number {
-    const now = new Date();
+  private daysRemainingByDate(cutoffDate: Date, today: Date): number {
     const cutoff = new Date(
       Date.UTC(
         cutoffDate.getUTCFullYear(),
@@ -89,30 +88,20 @@ export class StreamingSalesService {
         cutoffDate.getUTCDate(),
       ),
     );
-    const today = new Date(
-      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
-    );
     return Math.max(
       0,
       Math.ceil((cutoff.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)),
     );
   }
 
-  private startOfTodayUTC(): Date {
-    const now = new Date();
-    return new Date(
-      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
-    );
-  }
-
-  private isToday(date: Date): boolean {
-    const today = this.startOfTodayUTC().toISOString().split('T')[0];
+  private isToday(date: Date, today: Date): boolean {
+    const todayStr = today.toISOString().split('T')[0];
     const d = new Date(
       Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()),
     )
       .toISOString()
       .split('T')[0];
-    return today === d;
+    return todayStr === d;
   }
 
   async findAndAssert(id: number, companyId: number) {
@@ -147,7 +136,7 @@ export class StreamingSalesService {
   // =========================
   // CREATE
   // =========================
-  async create(dto: CreateStreamingSaleDto, companyId: number) {
+  async create(dto: CreateStreamingSaleDto, companyId: number, today: Date) {
     const salePrice = this.parseDecimal(dto.salePrice, 'salePrice');
     const saleDate = this.parseDate(dto.saleDate, 'saleDate');
 
@@ -187,7 +176,7 @@ export class StreamingSalesService {
       );
 
     const cutoffDate = this.addDays(saleDate, dto.daysAssigned);
-    const renewalStatus = this.isToday(cutoffDate)
+    const renewalStatus = this.isToday(cutoffDate, today)
       ? RenewalMessageStatus.PENDING
       : RenewalMessageStatus.NOT_APPLICABLE;
 
@@ -287,7 +276,7 @@ export class StreamingSalesService {
   // =========================
   // UPDATE
   // =========================
-  async update(id: number, dto: UpdateStreamingSaleDto, companyId: number) {
+  async update(id: number, dto: UpdateStreamingSaleDto, companyId: number, today: Date) {
     const sale = await this.findAndAssert(id, companyId);
 
     if (sale.status !== SaleStatus.ACTIVE && sale.status !== SaleStatus.PAUSED)
@@ -320,8 +309,7 @@ export class StreamingSalesService {
 
     let renewalStatus = sale.renewalStatus;
     if (dto.saleDate || dto.daysAssigned) {
-      const today = this.startOfTodayUTC();
-      if (this.isToday(cutoffDate)) {
+      if (this.isToday(cutoffDate, today)) {
         renewalStatus = RenewalMessageStatus.PENDING;
       } else if (cutoffDate >= today) {
         renewalStatus = RenewalMessageStatus.NOT_APPLICABLE;
@@ -348,7 +336,7 @@ export class StreamingSalesService {
   // =========================
   // VACIAR — perfil vuelve a AVAILABLE
   // =========================
-  async empty(id: number, companyId: number) {
+  async empty(id: number, companyId: number, today: Date) {
     const sale = await this.findAndAssert(id, companyId);
 
     if (
@@ -361,7 +349,7 @@ export class StreamingSalesService {
     const remaining =
       sale.status === SaleStatus.PAUSED && sale.pausedDaysLeft != null
         ? Number(sale.pausedDaysLeft)
-        : this.daysRemainingByDate(sale.cutoffDate);
+        : this.daysRemainingByDate(sale.cutoffDate, today);
 
     return this.prisma.$transaction(async (tx) => {
       await tx.accountProfile.update({
@@ -401,7 +389,7 @@ export class StreamingSalesService {
   // =========================
   // RENOVAR — nueva venta en mismo perfil
   // =========================
-  async renew(id: number, dto: RenewStreamingSaleDto, companyId: number) {
+  async renew(id: number, dto: RenewStreamingSaleDto, companyId: number, today: Date) {
     const sale = await this.findAndAssert(id, companyId);
 
     if (sale.status !== SaleStatus.ACTIVE && sale.status !== SaleStatus.EXPIRED)
@@ -422,7 +410,7 @@ export class StreamingSalesService {
       if (!customer) throw new NotFoundException('Cliente no encontrado.');
     }
 
-    const renewalStatus = this.isToday(cutoffDate)
+    const renewalStatus = this.isToday(cutoffDate, today)
       ? RenewalMessageStatus.PENDING
       : RenewalMessageStatus.NOT_APPLICABLE;
 

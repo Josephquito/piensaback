@@ -2,6 +2,7 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { SaleStatus, RenewalMessageStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { StreamingSalesService, SALE_SELECT } from './streaming-sales.service';
+import { daysRemainingFrom } from '../common/utils/date.utils';
 
 @Injectable()
 export class StreamingSalePauseService {
@@ -10,42 +11,22 @@ export class StreamingSalePauseService {
     private readonly sales: StreamingSalesService,
   ) {}
 
-  private daysRemainingByDate(cutoffDate: Date): number {
-    const now = new Date();
-    const cutoff = new Date(
-      Date.UTC(
-        cutoffDate.getUTCFullYear(),
-        cutoffDate.getUTCMonth(),
-        cutoffDate.getUTCDate(),
-      ),
-    );
-    const today = new Date(
-      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
-    );
-    return Math.max(
-      0,
-      Math.ceil((cutoff.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)),
-    );
-  }
-
-  private startOfTodayUTC(): Date {
-    const now = new Date();
-    return new Date(
-      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
-    );
-  }
-
   // =========================
   // PAUSAR
   // =========================
 
-  async pause(id: number, companyId: number) {
+  async pause(id: number, companyId: number, today: Date) {
     const sale = await this.sales.findAndAssert(id, companyId);
 
     if (sale.status !== SaleStatus.ACTIVE)
       throw new BadRequestException('Solo se pueden pausar ventas activas.');
 
-    const pausedDaysLeft = this.daysRemainingByDate(sale.cutoffDate); // ← por fecha
+    if (!sale.daysAssigned || sale.daysAssigned <= 0)
+      throw new BadRequestException(
+        'La venta tiene días asignados inválidos. Corrija el registro antes de pausar.',
+      );
+
+    const pausedDaysLeft = daysRemainingFrom(sale.cutoffDate, today);
 
     const creditAmount = sale.salePrice
       .div(sale.daysAssigned)
@@ -65,7 +46,7 @@ export class StreamingSalePauseService {
     });
   }
 
-  async resume(id: number, companyId: number) {
+  async resume(id: number, companyId: number, today: Date) {
     const sale = await this.sales.findAndAssert(id, companyId);
 
     if (sale.status !== SaleStatus.PAUSED)
@@ -75,7 +56,6 @@ export class StreamingSalePauseService {
       throw new BadRequestException('No hay días restantes para reanudar.');
 
     // nueva cutoffDate = inicio de hoy + pausedDaysLeft días
-    const today = this.startOfTodayUTC();
     const newCutoffDate = new Date(today);
     newCutoffDate.setUTCDate(today.getUTCDate() + sale.pausedDaysLeft);
 

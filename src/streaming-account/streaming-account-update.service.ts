@@ -22,7 +22,7 @@ export class StreamingAccountUpdateService {
     private readonly accounts: StreamingAccountsService,
   ) {}
 
-  async update(id: number, dto: UpdateStreamingAccountDto, companyId: number) {
+  async update(id: number, dto: UpdateStreamingAccountDto, companyId: number, today: Date) {
     // --- Rechazar campos prohibidos ---
     if ('totalCost' in dto)
       throw new BadRequestException(
@@ -73,8 +73,8 @@ export class StreamingAccountUpdateService {
       newDurationDays,
     );
 
-    const oldDaysLeft = this.accounts.daysRemainingByDate(account.cutoffDate);
-    const newDaysLeft = this.accounts.daysRemainingByDate(newCutoffDate);
+    const oldDaysLeft = this.accounts.daysRemainingByDate(account.cutoffDate, today);
+    const newDaysLeft = this.accounts.daysRemainingByDate(newCutoffDate, today);
 
     // --- Lecturas previas fuera de la transacción para no alargarla ---
     let activeOrPausedSales = 0;
@@ -180,7 +180,7 @@ export class StreamingAccountUpdateService {
         }
 
         // 5) Recalcular status según nueva cutoffDate
-        const expired = this.accounts.isExpired(newCutoffDate);
+        const expired = this.accounts.isExpired(newCutoffDate, today);
         const currentStatus =
           (data.status as StreamingAccountStatus) ?? account.status;
 

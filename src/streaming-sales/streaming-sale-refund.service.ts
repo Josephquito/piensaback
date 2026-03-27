@@ -3,6 +3,7 @@ import { KardexRefType, Prisma, SaleStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { KardexService } from '../kardex/kardex.service';
 import { StreamingSalesService, SALE_SELECT } from './streaming-sales.service';
+import { daysRemainingFrom } from '../common/utils/date.utils';
 
 @Injectable()
 export class StreamingSaleRefundService {
@@ -11,24 +12,6 @@ export class StreamingSaleRefundService {
     private readonly kardex: KardexService,
     private readonly sales: StreamingSalesService,
   ) {}
-
-  private daysRemainingByDate(cutoffDate: Date): number {
-    const now = new Date();
-    const cutoff = new Date(
-      Date.UTC(
-        cutoffDate.getUTCFullYear(),
-        cutoffDate.getUTCMonth(),
-        cutoffDate.getUTCDate(),
-      ),
-    );
-    const today = new Date(
-      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
-    );
-    return Math.max(
-      0,
-      Math.ceil((cutoff.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)),
-    );
-  }
 
   async refund(id: number, companyId: number) {
     const sale = await this.sales.findAndAssert(id, companyId);
@@ -79,7 +62,7 @@ export class StreamingSaleRefundService {
     });
   }
 
-  async emptyAll(accountId: number, companyId: number) {
+  async emptyAll(accountId: number, companyId: number, today: Date) {
     const account = await this.prisma.streamingAccount.findFirst({
       where: { id: accountId, companyId },
       select: { id: true, platformId: true },
@@ -112,7 +95,7 @@ export class StreamingSaleRefundService {
         const daysLeft =
           sale.status === SaleStatus.PAUSED && sale.pausedDaysLeft != null
             ? Number(sale.pausedDaysLeft)
-            : this.daysRemainingByDate(sale.cutoffDate); // ← método privado
+            : daysRemainingFrom(sale.cutoffDate, today);
 
         if (daysLeft > 0) {
           await this.kardex.registerIn(

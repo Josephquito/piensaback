@@ -85,31 +85,7 @@ export class StreamingAccountsService {
     return totalCost.div(profilesTotal).div(durationDays);
   }
 
-  isExpired(cutoffDate: Date): boolean {
-    const now = new Date();
-    const cutoff = new Date(
-      cutoffDate.getUTCFullYear(),
-      cutoffDate.getUTCMonth(),
-      cutoffDate.getUTCDate(),
-      23,
-      59,
-      59,
-      999,
-    );
-    const today = new Date(
-      now.getFullYear(),
-      now.getMonth(),
-      now.getDate(),
-      0,
-      0,
-      0,
-      0,
-    );
-    return today > cutoff;
-  }
-
-  daysRemainingByDate(cutoffDate: Date): number {
-    const now = new Date();
+  isExpired(cutoffDate: Date, today: Date): boolean {
     const cutoff = new Date(
       Date.UTC(
         cutoffDate.getUTCFullYear(),
@@ -117,8 +93,16 @@ export class StreamingAccountsService {
         cutoffDate.getUTCDate(),
       ),
     );
-    const today = new Date(
-      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
+    return today > cutoff;
+  }
+
+  daysRemainingByDate(cutoffDate: Date, today: Date): number {
+    const cutoff = new Date(
+      Date.UTC(
+        cutoffDate.getUTCFullYear(),
+        cutoffDate.getUTCMonth(),
+        cutoffDate.getUTCDate(),
+      ),
     );
     return Math.max(
       0,
@@ -152,7 +136,7 @@ export class StreamingAccountsService {
   // =========================
   // CREATE
   // =========================
-  async create(dto: CreateStreamingAccountDto, companyId: number) {
+  async create(dto: CreateStreamingAccountDto, companyId: number, today: Date) {
     const purchaseDate = this.parseDate(dto.purchaseDate, 'purchaseDate');
     const cutoffDate = this.parseDate(dto.cutoffDate, 'cutoffDate');
     const totalCost = this.parseDecimal(dto.totalCost, 'totalCost');
@@ -164,8 +148,8 @@ export class StreamingAccountsService {
     );
 
     // Calcular días restantes y status inicial
-    const daysLeft = this.daysRemainingByDate(cutoffDate);
-    const isAlreadyExpired = this.isExpired(cutoffDate);
+    const daysLeft = this.daysRemainingByDate(cutoffDate, today);
+    const isAlreadyExpired = this.isExpired(cutoffDate, today);
     // daysLeft = 0 + isAlreadyExpired = false → vence hoy → ACTIVE
     // daysLeft = 0 + isAlreadyExpired = true  → ya venció   → EXPIRED
     const initialStatus = isAlreadyExpired

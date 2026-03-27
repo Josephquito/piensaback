@@ -11,6 +11,7 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
+import { UserToday } from '../common/decorators/user-date.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PermissionsGuard } from '../common/guards/permissions.guard';
 import { CompanyScopeGuard } from '../common/guards/company-scope.guard';
@@ -66,8 +67,12 @@ export class StreamingAccountsController {
 
   @Post()
   @RequirePermissions('STREAMING_ACCOUNTS:CREATE')
-  create(@Body() dto: CreateStreamingAccountDto, @Req() req: RequestWithUser) {
-    return this.service.create(dto, req.companyId!);
+  create(
+    @Body() dto: CreateStreamingAccountDto,
+    @Req() req: RequestWithUser,
+    @UserToday() today: Date,
+  ) {
+    return this.service.create(dto, req.companyId!, today);
   }
 
   @Patch(':id')
@@ -76,14 +81,19 @@ export class StreamingAccountsController {
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateStreamingAccountDto,
     @Req() req: RequestWithUser,
+    @UserToday() today: Date,
   ) {
-    return this.updateService.update(id, dto, req.companyId!);
+    return this.updateService.update(id, dto, req.companyId!, today);
   }
 
   @Delete(':id')
   @RequirePermissions('STREAMING_ACCOUNTS:DELETE')
-  remove(@Param('id', ParseIntPipe) id: number, @Req() req: RequestWithUser) {
-    return this.deletionService.remove(id, req.companyId!);
+  remove(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req: RequestWithUser,
+    @UserToday() today: Date,
+  ) {
+    return this.deletionService.remove(id, req.companyId!, today);
   }
 
   @Post(':id/renew')
@@ -92,8 +102,9 @@ export class StreamingAccountsController {
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: RenewAccountDto,
     @Req() req: RequestWithUser,
+    @UserToday() today: Date,
   ) {
-    return this.renewalService.renew(id, dto, req.companyId!);
+    return this.renewalService.renew(id, dto, req.companyId!, today);
   }
 
   @Post(':id/correct-cost')
@@ -122,8 +133,9 @@ export class StreamingAccountsController {
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: ReplacePaidDto,
     @Req() req: RequestWithUser,
+    @UserToday() today: Date,
   ) {
-    return this.replacementService.replacePaid(id, dto, req.companyId!);
+    return this.replacementService.replacePaid(id, dto, req.companyId!, today);
   }
 
   @Post(':id/replace/inventory')
@@ -132,11 +144,13 @@ export class StreamingAccountsController {
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: ReplaceFromInventoryDto,
     @Req() req: RequestWithUser,
+    @UserToday() today: Date,
   ) {
     return this.replacementService.replaceFromInventory(
       id,
       dto,
       req.companyId!,
+      today,
     );
   }
 
@@ -145,8 +159,9 @@ export class StreamingAccountsController {
   addProfile(
     @Param('id', ParseIntPipe) id: number,
     @Req() req: RequestWithUser,
+    @UserToday() today: Date,
   ) {
-    return this.profilesService.addProfile(id, req.companyId!);
+    return this.profilesService.addProfile(id, req.companyId!, today);
   }
 
   @Post(':id/remove-profile')
@@ -154,8 +169,9 @@ export class StreamingAccountsController {
   removeProfile(
     @Param('id', ParseIntPipe) id: number,
     @Req() req: RequestWithUser,
+    @UserToday() today: Date,
   ) {
-    return this.profilesService.removeProfile(id, req.companyId!);
+    return this.profilesService.removeProfile(id, req.companyId!, today);
   }
 
   @Post(':id/inactivate')
@@ -163,8 +179,9 @@ export class StreamingAccountsController {
   inactivate(
     @Param('id', ParseIntPipe) id: number,
     @Req() req: RequestWithUser,
+    @UserToday() today: Date,
   ) {
-    return this.profilesService.inactivate(id, req.companyId!);
+    return this.profilesService.inactivate(id, req.companyId!, today);
   }
 
   @Post(':id/reactivate')
@@ -172,14 +189,19 @@ export class StreamingAccountsController {
   reactivate(
     @Param('id', ParseIntPipe) id: number,
     @Req() req: RequestWithUser,
+    @UserToday() today: Date,
   ) {
-    return this.profilesService.reactivate(id, req.companyId!);
+    return this.profilesService.reactivate(id, req.companyId!, today);
   }
 
   @Post(':id/empty-all')
   @RequirePermissions('STREAMING_SALES:UPDATE')
-  emptyAll(@Param('id', ParseIntPipe) id: number, @Req() req: RequestWithUser) {
-    return this.refundService.emptyAll(id, req.companyId!);
+  emptyAll(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req: RequestWithUser,
+    @UserToday() today: Date,
+  ) {
+    return this.refundService.emptyAll(id, req.companyId!, today);
   }
 
   @Patch('profiles/:profileId/label')

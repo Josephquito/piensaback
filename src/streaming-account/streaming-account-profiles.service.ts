@@ -7,6 +7,8 @@ import { KardexRefType, Prisma, StreamingAccountStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { KardexService } from '../kardex/kardex.service';
 import { StreamingAccountsService } from './streaming-accounts.service';
+import { RenewalMessageStatus, SaleStatus } from '@prisma/client';
+import { daysRemainingFrom } from '../common/utils/date.utils';
 
 @Injectable()
 export class StreamingAccountProfilesService {
@@ -19,10 +21,13 @@ export class StreamingAccountProfilesService {
   // =========================
   // AGREGAR SLOT
   // =========================
-  async addProfile(id: number, companyId: number) {
+  async addProfile(id: number, companyId: number, today: Date) {
     const account = await this.accounts.findAndAssert(id, companyId);
     const newTotal = account.profilesTotal + 1;
-    const daysLeft = this.accounts.daysRemainingByDate(account.cutoffDate);
+    const daysLeft = this.accounts.daysRemainingByDate(
+      account.cutoffDate,
+      today,
+    );
 
     await this.prisma.$transaction(async (tx) => {
       await tx.accountProfile.create({
@@ -62,7 +67,7 @@ export class StreamingAccountProfilesService {
   // =========================
   // ELIMINAR SLOT
   // =========================
-  async removeProfile(id: number, companyId: number) {
+  async removeProfile(id: number, companyId: number, today: Date) {
     const account = await this.accounts.findAndAssert(id, companyId);
     const newTotal = account.profilesTotal - 1;
 
@@ -78,7 +83,10 @@ export class StreamingAccountProfilesService {
         'No se puede reducir: todos los perfiles están vendidos.',
       );
 
-    const daysLeft = this.accounts.daysRemainingByDate(account.cutoffDate);
+    const daysLeft = this.accounts.daysRemainingByDate(
+      account.cutoffDate,
+      today,
+    );
 
     await this.prisma.$transaction(async (tx) => {
       const toDelete = await tx.accountProfile.findFirst({
@@ -123,15 +131,19 @@ export class StreamingAccountProfilesService {
   // =========================
   // INACTIVAR
   // =========================
-  async inactivate(id: number, companyId: number) {
+  async inactivate(id: number, companyId: number, today: Date) {
     const account = await this.accounts.findAndAssert(id, companyId);
 
     if (account.status === StreamingAccountStatus.INACTIVE)
       throw new BadRequestException('La cuenta ya está inactiva.');
 
-    const daysLeft = this.accounts.daysRemainingByDate(account.cutoffDate);
+    const daysLeft = this.accounts.daysRemainingByDate(
+      account.cutoffDate,
+      today,
+    );
 
     await this.prisma.$transaction(async (tx) => {
+      // 1) Bloquear perfiles disponibles
       const availableProfiles = await tx.accountProfile.findMany({
         where: { accountId: account.id, status: 'AVAILABLE' },
         select: { id: true },
@@ -143,8 +155,7 @@ export class StreamingAccountProfilesService {
           data: { status: 'BLOCKED' },
         });
 
-        // Sale al avgCost actual — son días reales que se pierden
-        // temporalmente. Se recuperan en reactivate con registerIn.
+        // Sale al avgCost actual — son días reales que se pierden temporalmente.
         const qtyToAdjust = availableProfiles.length * daysLeft;
         if (qtyToAdjust > 0) {
           await this.kardex.registerAdjustOut(
@@ -161,6 +172,48 @@ export class StreamingAccountProfilesService {
         }
       }
 
+      // 2) Pausar ventas activas de la cuenta
+      const activeSales = await tx.streamingSale.findMany({
+        where: {
+          companyId,
+          accountId: account.id,
+          status: SaleStatus.ACTIVE,
+        },
+        select: {
+          id: true,
+          salePrice: true,
+          daysAssigned: true,
+          cutoffDate: true,
+        },
+      });
+
+      for (const sale of activeSales) {
+        if (!sale.daysAssigned || sale.daysAssigned <= 0) {
+          throw new BadRequestException(
+            `La venta ${sale.id} tiene días asignados inválidos. Corrija el registro antes de inactivar la cuenta.`,
+          );
+        }
+
+        const pausedDaysLeft = daysRemainingFrom(sale.cutoffDate, today);
+
+        const creditAmount = sale.salePrice
+          .div(sale.daysAssigned)
+          .mul(pausedDaysLeft)
+          .toDecimalPlaces(4);
+
+        await tx.streamingSale.update({
+          where: { id: sale.id },
+          data: {
+            status: SaleStatus.PAUSED,
+            pausedAt: new Date(),
+            pausedDaysLeft,
+            creditAmount,
+            renewalStatus: RenewalMessageStatus.NOT_APPLICABLE,
+          },
+        });
+      }
+
+      // 3) Inactivar cuenta
       await tx.streamingAccount.update({
         where: { id: account.id },
         data: { status: StreamingAccountStatus.INACTIVE },
@@ -173,18 +226,23 @@ export class StreamingAccountProfilesService {
   // =========================
   // REACTIVAR
   // =========================
-  async reactivate(id: number, companyId: number) {
+
+  async reactivate(id: number, companyId: number, today: Date) {
     const account = await this.accounts.findAndAssert(id, companyId);
 
     if (account.status !== StreamingAccountStatus.INACTIVE)
       throw new BadRequestException('La cuenta no está inactiva.');
 
-    if (this.accounts.isExpired(account.cutoffDate))
+    if (this.accounts.isExpired(account.cutoffDate, today))
       throw new BadRequestException(
         'No se puede reactivar: la cuenta está vencida. Renuévala primero.',
       );
 
-    const daysLeft = this.accounts.daysRemainingByDate(account.cutoffDate);
+    const daysLeft = this.accounts.daysRemainingByDate(
+      account.cutoffDate,
+      today,
+    );
+
     const dailyCost = this.accounts.calcDailyCost(
       account.totalCost,
       account.profilesTotal,
@@ -192,6 +250,7 @@ export class StreamingAccountProfilesService {
     );
 
     await this.prisma.$transaction(async (tx) => {
+      // 1) Restaurar perfiles bloqueados
       const blockedProfiles = await tx.accountProfile.findMany({
         where: { accountId: account.id, status: 'BLOCKED' },
         select: { id: true },
@@ -204,7 +263,6 @@ export class StreamingAccountProfilesService {
         });
 
         // Restaurar los días que se ajustaron al inactivar.
-        // Entran al dailyCost original de la cuenta.
         const qtyToRestore = blockedProfiles.length * daysLeft;
         if (qtyToRestore > 0) {
           await this.kardex.registerIn(
@@ -221,6 +279,52 @@ export class StreamingAccountProfilesService {
         }
       }
 
+      // 2) Reanudar ventas pausadas de la cuenta
+      const pausedSales = await tx.streamingSale.findMany({
+        where: {
+          companyId,
+          accountId: account.id,
+          status: SaleStatus.PAUSED,
+        },
+        select: {
+          id: true,
+          pausedDaysLeft: true,
+        },
+      });
+
+      for (const sale of pausedSales) {
+        if (!sale.pausedDaysLeft || sale.pausedDaysLeft <= 0) {
+          throw new BadRequestException(
+            `La venta ${sale.id} no tiene días restantes para reanudar.`,
+          );
+        }
+
+        // nueva cutoffDate = hoy + pausedDaysLeft
+        const newCutoffDate = new Date(today);
+        newCutoffDate.setUTCDate(today.getUTCDate() + sale.pausedDaysLeft);
+
+        const todayStr = today.toISOString().split('T')[0];
+        const cutoffStr = newCutoffDate.toISOString().split('T')[0];
+
+        const renewalStatus =
+          todayStr === cutoffStr
+            ? RenewalMessageStatus.PENDING
+            : RenewalMessageStatus.NOT_APPLICABLE;
+
+        await tx.streamingSale.update({
+          where: { id: sale.id },
+          data: {
+            status: SaleStatus.ACTIVE,
+            cutoffDate: newCutoffDate,
+            pausedAt: null,
+            pausedDaysLeft: null,
+            creditAmount: null,
+            renewalStatus,
+          },
+        });
+      }
+
+      // 3) Reactivar cuenta
       await tx.streamingAccount.update({
         where: { id: account.id },
         data: { status: StreamingAccountStatus.ACTIVE },

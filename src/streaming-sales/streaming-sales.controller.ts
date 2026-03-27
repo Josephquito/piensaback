@@ -10,6 +10,7 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
+import { UserToday } from '../common/decorators/user-date.decorator';
 import { RenewalMessageStatus, SaleStatus } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PermissionsGuard } from '../common/guards/permissions.guard';
@@ -62,8 +63,12 @@ export class StreamingSalesController {
   // Crear nueva venta en un perfil disponible
   @Post()
   @RequirePermissions('STREAMING_SALES:CREATE')
-  create(@Body() dto: CreateStreamingSaleDto, @Req() req: RequestWithUser) {
-    return this.service.create(dto, req.companyId!);
+  create(
+    @Body() dto: CreateStreamingSaleDto,
+    @Req() req: RequestWithUser,
+    @UserToday() today: Date,
+  ) {
+    return this.service.create(dto, req.companyId!, today);
   }
 
   // Editar datos de una venta (cliente, precio, fechas, notas)
@@ -73,15 +78,20 @@ export class StreamingSalesController {
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateStreamingSaleDto,
     @Req() req: RequestWithUser,
+    @UserToday() today: Date,
   ) {
-    return this.service.update(id, dto, req.companyId!);
+    return this.service.update(id, dto, req.companyId!, today);
   }
 
   // Vaciar perfil — pasa a AVAILABLE y venta a CLOSED
   @Post(':id/empty')
   @RequirePermissions('STREAMING_SALES:UPDATE')
-  empty(@Param('id', ParseIntPipe) id: number, @Req() req: RequestWithUser) {
-    return this.service.empty(id, req.companyId!);
+  empty(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req: RequestWithUser,
+    @UserToday() today: Date,
+  ) {
+    return this.service.empty(id, req.companyId!, today);
   }
 
   // Renovar venta — cierra la actual y crea una nueva en el mismo perfil
@@ -91,22 +101,31 @@ export class StreamingSalesController {
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: RenewStreamingSaleDto,
     @Req() req: RequestWithUser,
+    @UserToday() today: Date,
   ) {
-    return this.service.renew(id, dto, req.companyId!);
+    return this.service.renew(id, dto, req.companyId!, today);
   }
 
   // Pausar venta — congela días restantes y calcula saldo equivalente
   @Post(':id/pause')
   @RequirePermissions('STREAMING_SALES:UPDATE')
-  pause(@Param('id', ParseIntPipe) id: number, @Req() req: RequestWithUser) {
-    return this.pauseService.pause(id, req.companyId!);
+  pause(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req: RequestWithUser,
+    @UserToday() today: Date,
+  ) {
+    return this.pauseService.pause(id, req.companyId!, today);
   }
 
   // Reanudar venta pausada — recalcula cutoffDate desde hoy
   @Post(':id/resume')
   @RequirePermissions('STREAMING_SALES:UPDATE')
-  resume(@Param('id', ParseIntPipe) id: number, @Req() req: RequestWithUser) {
-    return this.pauseService.resume(id, req.companyId!);
+  resume(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req: RequestWithUser,
+    @UserToday() today: Date,
+  ) {
+    return this.pauseService.resume(id, req.companyId!, today);
   }
 
   // Transferir cliente a otro perfil/cuenta de la misma plataforma
@@ -116,8 +135,9 @@ export class StreamingSalesController {
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: TransferProfileDto,
     @Req() req: RequestWithUser,
+    @UserToday() today: Date,
   ) {
-    return this.transferService.transfer(id, dto, req.companyId!);
+    return this.transferService.transfer(id, dto, req.companyId!, today);
   }
 
   // Reembolsar saldo al cliente y cerrar el perfil

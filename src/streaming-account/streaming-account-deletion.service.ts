@@ -16,7 +16,7 @@ export class StreamingAccountDeletionService {
     private readonly accounts: StreamingAccountsService,
   ) {}
 
-  async remove(id: number, companyId: number) {
+  async remove(id: number, companyId: number, today: Date) {
     const account = await this.accounts.findAndAssert(id, companyId);
 
     if (account.status === StreamingAccountStatus.DELETED)
@@ -38,7 +38,7 @@ export class StreamingAccountDeletionService {
         `No se puede eliminar: hay ${activeSales} perfiles con ventas vigentes.`,
       );
 
-    const daysLeft = this.accounts.daysRemainingByDate(account.cutoffDate);
+    const daysLeft = this.accounts.daysRemainingByDate(account.cutoffDate, today);
 
     await this.prisma.$transaction(async (tx) => {
       // 1) Cerrar ventas vencidas que quedaron en ACTIVE o EXPIRED

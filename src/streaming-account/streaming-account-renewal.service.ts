@@ -16,7 +16,7 @@ export class StreamingAccountRenewalService {
     private readonly accounts: StreamingAccountsService,
   ) {}
 
-  async renew(id: number, dto: RenewAccountDto, companyId: number) {
+  async renew(id: number, dto: RenewAccountDto, companyId: number, _today: Date) {
     const account = await this.accounts.findAndAssert(id, companyId);
 
     const newPurchaseDate = this.accounts.parseDate(

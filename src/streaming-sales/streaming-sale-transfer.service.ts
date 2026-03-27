@@ -8,6 +8,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { KardexService } from '../kardex/kardex.service';
 import { StreamingSalesService, SALE_SELECT } from './streaming-sales.service';
 import { TransferProfileDto } from './dto/transfer-profile.dto';
+import { daysRemainingFrom } from '../common/utils/date.utils';
 
 @Injectable()
 export class StreamingSaleTransferService {
@@ -17,32 +18,7 @@ export class StreamingSaleTransferService {
     private readonly sales: StreamingSalesService,
   ) {}
 
-  private daysRemainingByDate(cutoffDate: Date): number {
-    const now = new Date();
-    const cutoff = new Date(
-      Date.UTC(
-        cutoffDate.getUTCFullYear(),
-        cutoffDate.getUTCMonth(),
-        cutoffDate.getUTCDate(),
-      ),
-    );
-    const today = new Date(
-      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
-    );
-    return Math.max(
-      0,
-      Math.ceil((cutoff.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)),
-    );
-  }
-
-  private startOfTodayUTC(): Date {
-    const now = new Date();
-    return new Date(
-      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
-    );
-  }
-
-  async transfer(id: number, dto: TransferProfileDto, companyId: number) {
+  async transfer(id: number, dto: TransferProfileDto, companyId: number, today: Date) {
     const sale = await this.sales.findAndAssert(id, companyId);
 
     if (
@@ -83,10 +59,9 @@ export class StreamingSaleTransferService {
     const daysLeft =
       sale.status === SaleStatus.PAUSED && sale.pausedDaysLeft != null
         ? sale.pausedDaysLeft
-        : this.daysRemainingByDate(sale.cutoffDate);
+        : daysRemainingFrom(sale.cutoffDate, today);
 
     // nueva cutoffDate desde inicio de hoy + daysLeft
-    const today = this.startOfTodayUTC();
     const newCutoffDate = new Date(today);
     newCutoffDate.setUTCDate(today.getUTCDate() + daysLeft);
 
@@ -151,7 +126,7 @@ export class StreamingSaleTransferService {
           profileId: targetProfile.id,
           customerId: sale.customerId,
           salePrice: sale.salePrice,
-          saleDate: new Date(),
+          saleDate: today,
           daysAssigned: daysLeft > 0 ? daysLeft : sale.daysAssigned,
           cutoffDate: newCutoffDate,
           costAtSale: newCostAtSale,

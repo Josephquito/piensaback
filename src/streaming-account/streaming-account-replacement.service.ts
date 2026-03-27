@@ -49,7 +49,7 @@ export class StreamingAccountReplacementService {
   // =========================
   // CASO 2 — Reemplazo con costo adicional
   // =========================
-  async replacePaid(id: number, dto: ReplacePaidDto, companyId: number) {
+  async replacePaid(id: number, dto: ReplacePaidDto, companyId: number, today: Date) {
     const account = await this.accounts.findAndAssert(id, companyId);
 
     const newPurchaseDate = this.accounts.parseDate(
@@ -76,7 +76,7 @@ export class StreamingAccountReplacementService {
     );
 
     // Días disponibles de la cuenta que se reemplaza
-    const daysLeft = this.accounts.daysRemainingByDate(account.cutoffDate);
+    const daysLeft = this.accounts.daysRemainingByDate(account.cutoffDate, today);
     const availableCount = await this.prisma.accountProfile.count({
       where: { accountId: account.id, status: 'AVAILABLE' },
     });
@@ -88,7 +88,7 @@ export class StreamingAccountReplacementService {
       select: { cutoffDate: true },
     });
     const soldDaysToTransfer = activeSales.reduce((acc, sale) => {
-      return acc + this.accounts.daysRemainingByDate(sale.cutoffDate);
+      return acc + this.accounts.daysRemainingByDate(sale.cutoffDate, today);
     }, 0);
 
     const oldEmail = account.email;
@@ -172,6 +172,7 @@ export class StreamingAccountReplacementService {
     id: number,
     dto: ReplaceFromInventoryDto,
     companyId: number,
+    today: Date,
   ) {
     const accountA = await this.accounts.findAndAssert(id, companyId);
     const accountB = await this.accounts.findAndAssert(
@@ -206,8 +207,8 @@ export class StreamingAccountReplacementService {
         `La cuenta B solo tiene ${availableProfilesB.length} perfiles disponibles y se necesitan ${soldProfilesA.length}.`,
       );
 
-    const daysLeftA = this.accounts.daysRemainingByDate(accountA.cutoffDate);
-    const daysLeftB = this.accounts.daysRemainingByDate(accountB.cutoffDate);
+    const daysLeftA = this.accounts.daysRemainingByDate(accountA.cutoffDate, today);
+    const daysLeftB = this.accounts.daysRemainingByDate(accountB.cutoffDate, today);
 
     const availableCountA = await this.prisma.accountProfile.count({
       where: { accountId: accountA.id, status: 'AVAILABLE' },
