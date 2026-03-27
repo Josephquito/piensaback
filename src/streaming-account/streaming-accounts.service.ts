@@ -163,6 +163,15 @@ export class StreamingAccountsService {
       durationDays,
     );
 
+    // Calcular días restantes y status inicial
+    const daysLeft = this.daysRemainingByDate(cutoffDate);
+    const isAlreadyExpired = this.isExpired(cutoffDate);
+    // daysLeft = 0 + isAlreadyExpired = false → vence hoy → ACTIVE
+    // daysLeft = 0 + isAlreadyExpired = true  → ya venció   → EXPIRED
+    const initialStatus = isAlreadyExpired
+      ? StreamingAccountStatus.EXPIRED
+      : StreamingAccountStatus.ACTIVE;
+
     return this.prisma.$transaction(async (tx) => {
       // Validaciones dentro de la transacción para evitar race conditions
       const platform = await tx.streamingPlatform.findFirst({
@@ -177,7 +186,6 @@ export class StreamingAccountsService {
       });
       if (!supplier) throw new NotFoundException('Proveedor no accesible.');
 
-      // Buscar si existe una cuenta DELETED con el mismo email+plataforma+empresa
       const deleted = await tx.streamingAccount.findFirst({
         where: {
           companyId,
@@ -191,10 +199,7 @@ export class StreamingAccountsService {
       let accountId: number;
 
       if (deleted) {
-        // Reusar el registro DELETED — es una compra nueva con el mismo email.
-        // Al eliminar la cuenta el kardex ya se ajustó correctamente,
-        // así que no hay nada que limpiar — el registerIn del bloque
-        // común lo trata como una compra nueva normal.
+        // Reusar registro DELETED — compra nueva con el mismo email
         await tx.streamingAccount.update({
           where: { id: deleted.id },
           data: {
@@ -206,7 +211,7 @@ export class StreamingAccountsService {
             cutoffDate,
             totalCost,
             notes: dto.notes ?? null,
-            status: StreamingAccountStatus.ACTIVE,
+            status: initialStatus, // ← ACTIVE o EXPIRED según días restantes
           },
         });
 
@@ -239,7 +244,7 @@ export class StreamingAccountsService {
               cutoffDate,
               totalCost,
               notes: dto.notes ?? null,
-              status: StreamingAccountStatus.ACTIVE,
+              status: initialStatus, // ← ACTIVE o EXPIRED según días restantes
             },
             select: { id: true },
           });
@@ -262,23 +267,28 @@ export class StreamingAccountsService {
         accountId = account.id;
       }
 
-      // Común para ambos casos — compra nueva
+      // Común para ambos casos
       await tx.supplier.update({
         where: { id: dto.supplierId },
         data: { balance: { decrement: totalCost } },
       });
 
-      await this.kardex.registerIn(
-        {
-          companyId,
-          platformId: dto.platformId,
-          qty: profilesTotal * durationDays,
-          unitCost: dailyCost,
-          refType: KardexRefType.ACCOUNT_PURCHASE,
-          accountId,
-        },
-        tx,
-      );
+      // Solo registrar kardex si hay días reales disponibles
+      // Si vence hoy (daysLeft=0) o ya venció (isAlreadyExpired),
+      // no hay días en inventario que registrar
+      if (daysLeft > 0) {
+        await this.kardex.registerIn(
+          {
+            companyId,
+            platformId: dto.platformId,
+            qty: profilesTotal * daysLeft, // ← días reales disponibles
+            unitCost: dailyCost,
+            refType: KardexRefType.ACCOUNT_PURCHASE,
+            accountId,
+          },
+          tx,
+        );
+      }
 
       return tx.streamingAccount.findUnique({
         where: { id: accountId },
