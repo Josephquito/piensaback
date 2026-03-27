@@ -61,7 +61,6 @@ export class StreamingAccountReplacementService {
     if (!Number.isInteger(dto.durationDays) || dto.durationDays <= 0)
       throw new BadRequestException('durationDays inválido.');
 
-    // cutoffDate siempre derivado — nunca aceptar del DTO
     const newCutoffDate = new Date(
       Date.UTC(
         newPurchaseDate.getUTCFullYear(),
@@ -76,19 +75,18 @@ export class StreamingAccountReplacementService {
       dto.durationDays,
     );
 
-    const costItem = await this.prisma.costItem.findUnique({
-      where: {
-        companyId_platformId: { companyId, platformId: account.platformId },
-      },
-      select: { stock: true },
+    // Días disponibles de la cuenta que se reemplaza
+    const daysLeft = this.accounts.daysRemainingByDate(account.cutoffDate);
+    const availableCount = await this.prisma.accountProfile.count({
+      where: { accountId: account.id, status: 'AVAILABLE' },
     });
-    const currentStock = costItem?.stock ?? 0;
+    const qtyToClose = availableCount * daysLeft;
 
+    // Días de ventas activas que se transfieren
     const activeSales = await this.prisma.streamingSale.findMany({
       where: { accountId: account.id, status: 'ACTIVE' },
       select: { cutoffDate: true },
     });
-
     const soldDaysToTransfer = activeSales.reduce((acc, sale) => {
       return acc + this.accounts.daysRemainingByDate(sale.cutoffDate);
     }, 0);
@@ -96,13 +94,13 @@ export class StreamingAccountReplacementService {
     const oldEmail = account.email;
 
     await this.prisma.$transaction(async (tx) => {
-      // 1) ADJUST_OUT — cierra todo el stock actual (días perdidos de A)
-      if (currentStock !== 0) {
+      // 1) ADJUST_OUT — solo los días disponibles de esta cuenta
+      if (qtyToClose > 0) {
         await this.kardex.registerAdjustOut(
           {
             companyId,
             platformId: account.platformId,
-            qty: Math.abs(currentStock),
+            qty: qtyToClose,
             refType: KardexRefType.ACCOUNT_REPLACEMENT,
             accountId: account.id,
             allowNegative: true,
@@ -124,7 +122,7 @@ export class StreamingAccountReplacementService {
         tx,
       );
 
-      // 3) OUT — consume días de ventas activas que se transfieren a la nueva cuenta
+      // 3) OUT — consume días de ventas activas que se transfieren
       if (soldDaysToTransfer > 0) {
         await this.kardex.registerOut(
           {
@@ -138,13 +136,13 @@ export class StreamingAccountReplacementService {
         );
       }
 
-      // 4) Balance proveedor — descuenta el costo de la cuenta nueva
+      // 4) Balance proveedor
       await tx.supplier.update({
         where: { id: account.supplierId },
         data: { balance: { decrement: newTotalCost } },
       });
 
-      // 5) Actualizar cuenta con datos de la nueva
+      // 5) Actualizar cuenta
       await tx.streamingAccount.update({
         where: { id: account.id },
         data: {
@@ -215,17 +213,10 @@ export class StreamingAccountReplacementService {
       where: { accountId: accountA.id, status: 'AVAILABLE' },
     });
 
-    const activeSalesA = await this.prisma.streamingSale.findMany({
-      where: { accountId: accountA.id, status: 'ACTIVE' },
-      select: { cutoffDate: true },
-    });
-
-    const soldDaysA = activeSalesA.reduce((acc, sale) => {
-      return acc + this.accounts.daysRemainingByDate(sale.cutoffDate);
-    }, 0);
-
     await this.prisma.$transaction(async (tx) => {
-      // 1) ADJUST_OUT en A — días disponibles que se pierden
+      // 1) ADJUST_OUT en A — solo días disponibles que se pierden
+      // Los días de ventas activas ya salieron como OUT al momento de vender,
+      // no están en stock, no se pueden quitar de nuevo
       const qtyCloseA = availableCountA * daysLeftA;
       if (qtyCloseA > 0) {
         await this.kardex.registerAdjustOut(
@@ -241,22 +232,7 @@ export class StreamingAccountReplacementService {
         );
       }
 
-      // 2) ADJUST_OUT en A — días de ventas activas que se pierden de A
-      if (soldDaysA > 0) {
-        await this.kardex.registerAdjustOut(
-          {
-            companyId,
-            platformId: accountA.platformId,
-            qty: soldDaysA,
-            refType: KardexRefType.ACCOUNT_REPLACEMENT,
-            accountId: accountA.id,
-            allowNegative: true,
-          },
-          tx,
-        );
-      }
-
-      // 3) ADJUST_OUT en B — días restantes de los perfiles que absorben
+      // 2) ADJUST_OUT en B — días restantes de los perfiles que absorben
       // las ventas migradas. Esos días se pierden porque el perfil
       // pasa a estar ocupado por un cliente que venía de A
       const qtyCloseB = soldProfilesA.length * daysLeftB;
@@ -274,7 +250,7 @@ export class StreamingAccountReplacementService {
         );
       }
 
-      // 4) Migrar ventas activas de A → B
+      // 3) Migrar ventas activas de A → B
       for (let i = 0; i < soldProfilesA.length; i++) {
         const profileA = soldProfilesA[i];
         const profileB = availableProfilesB[i];
@@ -302,7 +278,7 @@ export class StreamingAccountReplacementService {
         });
       }
 
-      // 5) Inactivar cuenta A con historial
+      // 4) Inactivar cuenta A con historial
       await tx.streamingAccount.update({
         where: { id: accountA.id },
         data: {
@@ -311,6 +287,13 @@ export class StreamingAccountReplacementService {
           replacedAt: new Date(),
           replacementNote: dto.note ?? null,
         },
+      });
+
+      // Bloquear perfiles AVAILABLE de A — mismo comportamiento que inactivación manual
+      // Así reactivate puede encontrarlos y restaurar el kardex correctamente
+      await tx.accountProfile.updateMany({
+        where: { accountId: accountA.id, status: 'AVAILABLE' },
+        data: { status: 'BLOCKED' },
       });
     });
 

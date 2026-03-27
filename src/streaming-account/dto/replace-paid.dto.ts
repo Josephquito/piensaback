@@ -13,9 +13,6 @@ export class ReplacePaidDto {
   @IsString()
   purchaseDate: string;
 
-  @IsString()
-  cutoffDate: string;
-
   @IsInt()
   @Min(1)
   durationDays: number;

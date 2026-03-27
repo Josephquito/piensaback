@@ -30,30 +30,21 @@ export class UpdateStreamingAccountDto {
   @IsOptional()
   @IsInt()
   @Min(1)
-  profilesTotal?: number;
-
-  @IsOptional()
-  @IsInt()
-  @Min(1)
-  durationDays?: number; // ← nuevo
+  durationDays?: number;
 
   @IsOptional()
   @IsString()
   purchaseDate?: string;
 
-  @IsOptional()
-  @IsString()
-  cutoffDate?: string;
-
-  @IsOptional()
-  @IsString()
-  totalCost?: string;
+  // cutoffDate eliminado — se deriva desde purchaseDate + durationDays
+  // totalCost eliminado — solo por CostCorrectionService
+  // profilesTotal eliminado — solo por ProfilesService
 
   @IsOptional()
   @IsString()
   notes?: string;
 
   @IsOptional()
-  @IsEnum(StreamingAccountStatus) // ← usar enum de Prisma
+  @IsEnum(StreamingAccountStatus)
   status?: StreamingAccountStatus;
 }

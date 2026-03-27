@@ -177,20 +177,38 @@ export class StreamingAccountUpdateService {
       }
 
       // 6) Recalcular kardex si cambió durationDays
-      // recalculateStock cierra el stock actual y abre uno nuevo con
-      // profilesTotal * nuevoDurationDays al nuevo dailyCost
-      if (daysChanged) {
-        await this.kardex.recalculateStock(
-          {
-            companyId,
-            platformId: account.platformId,
-            newQty: newProfilesTotal * newDurationDays,
-            newDailyCost,
-            refType: KardexRefType.ACCOUNT_UPDATE,
-            accountId: account.id,
-          },
-          tx,
-        );
+      const oldDaysLeft = this.accounts.daysRemainingByDate(account.cutoffDate);
+      const newDaysLeft = this.accounts.daysRemainingByDate(newCutoffDate);
+      const deltaPerProfile = newDaysLeft - oldDaysLeft;
+
+      if (deltaPerProfile !== 0) {
+        const totalDelta = deltaPerProfile * account.profilesTotal;
+
+        if (totalDelta > 0) {
+          await this.kardex.registerIn(
+            {
+              companyId,
+              platformId: account.platformId,
+              qty: totalDelta,
+              unitCost: newDailyCost,
+              refType: KardexRefType.ACCOUNT_UPDATE,
+              accountId: account.id,
+            },
+            tx,
+          );
+        } else {
+          await this.kardex.registerAdjustOut(
+            {
+              companyId,
+              platformId: account.platformId,
+              qty: Math.abs(totalDelta),
+              refType: KardexRefType.ACCOUNT_UPDATE,
+              accountId: account.id,
+              allowNegative: true,
+            },
+            tx,
+          );
+        }
       }
     });
 

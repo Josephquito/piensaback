@@ -45,7 +45,11 @@ export class StreamingAccountCostCorrectionService {
 
     // Traer ventas fuera de la tx para no alargarla innecesariamente
     const sales = await this.prisma.streamingSale.findMany({
-      where: { accountId: account.id, companyId },
+      where: {
+        accountId: account.id,
+        companyId,
+        status: { in: ['ACTIVE', 'PAUSED'] }, // ← solo ventas vigentes
+      },
       select: {
         id: true,
         daysAssigned: true,

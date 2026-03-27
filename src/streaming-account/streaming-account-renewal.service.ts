@@ -66,19 +66,9 @@ export class StreamingAccountRenewalService {
         data: { balance: { decrement: newTotalCost } },
       });
 
-      // 3) Limpiar stock positivo residual antes del IN
-      // Stock negativo se respeta — son ventas anticipadas válidas
-      await this.kardex.resetStock(
-        {
-          companyId,
-          platformId: account.platformId,
-          refType: KardexRefType.ACCOUNT_RENEWAL,
-          accountId: account.id,
-        },
-        tx,
-      );
-
-      // 4) Kardex IN con los nuevos parámetros
+      // 3) Kardex IN — agregar días nuevos al stock de la plataforma
+      // No se limpia stock previo porque puede haber días válidos
+      // de otras cuentas activas de la misma plataforma
       await this.kardex.registerIn(
         {
           companyId,

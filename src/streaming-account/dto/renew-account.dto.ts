@@ -5,9 +5,6 @@ export class RenewAccountDto {
   @IsString()
   purchaseDate: string;
 
-  @IsString()
-  cutoffDate: string;
-
   @IsInt()
   @Min(1)
   durationDays: number;

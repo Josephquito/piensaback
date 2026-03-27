@@ -191,7 +191,10 @@ export class StreamingAccountsService {
       let accountId: number;
 
       if (deleted) {
-        // Reactivar la cuenta eliminada
+        // Reusar el registro DELETED — es una compra nueva con el mismo email.
+        // Al eliminar la cuenta el kardex ya se ajustó correctamente,
+        // así que no hay nada que limpiar — el registerIn del bloque
+        // común lo trata como una compra nueva normal.
         await tx.streamingAccount.update({
           where: { id: deleted.id },
           data: {
@@ -207,7 +210,6 @@ export class StreamingAccountsService {
           },
         });
 
-        // Eliminar perfiles viejos y recrear limpios
         await tx.accountProfile.deleteMany({
           where: { accountId: deleted.id },
         });
@@ -218,18 +220,6 @@ export class StreamingAccountsService {
             status: 'AVAILABLE' as const,
           })),
         });
-
-        // Limpiar stock residual positivo en kardex antes del nuevo IN.
-        // Stock negativo se respeta: puede haber ventas anticipadas válidas.
-        await this.kardex.resetStock(
-          {
-            companyId,
-            platformId: dto.platformId,
-            refType: KardexRefType.ACCOUNT_REACTIVATION,
-            accountId: deleted.id,
-          },
-          tx,
-        );
 
         accountId = deleted.id;
       } else {
@@ -272,7 +262,7 @@ export class StreamingAccountsService {
         accountId = account.id;
       }
 
-      // Común para ambos casos
+      // Común para ambos casos — compra nueva
       await tx.supplier.update({
         where: { id: dto.supplierId },
         data: { balance: { decrement: totalCost } },
