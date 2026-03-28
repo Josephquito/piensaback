@@ -104,10 +104,8 @@ export class GoogleSyncService {
       select: { googleContactId: true },
     });
 
-    const knownIds = new Set([
-      ...existingCustomerIds.map((c) => c.googleContactId),
-      ...existingSupplierIds.map((s) => s.googleContactId),
-    ]);
+    const existingCustomerGoogleIds = new Set(existingCustomerIds.map((c) => c.googleContactId));
+    const existingSupplierGoogleIds = new Set(existingSupplierIds.map((s) => s.googleContactId));
 
     const customerGroupMembers = await this.getGroupMembers(
       accessToken,
@@ -119,7 +117,8 @@ export class GoogleSyncService {
     );
 
     console.log(`Total Google contacts: ${googleContacts.length}`);
-    console.log(`Known IDs en BD: ${knownIds.size}`);
+    console.log(`Known customer IDs en BD: ${existingCustomerGoogleIds.size}`);
+    console.log(`Known supplier IDs en BD: ${existingSupplierGoogleIds.size}`);
     console.log(`Grupo Clientes members: ${customerGroupMembers.size}`);
     console.log(`Grupo Proveedores members: ${supplierGroupMembers.size}`);
 
@@ -140,7 +139,6 @@ export class GoogleSyncService {
     }[] = [];
 
     for (const gc of googleContacts) {
-      if (knownIds.has(gc.resourceName)) continue;
       if (!gc.name && !gc.phone) continue;
 
       const nameLower = (gc.name || '').toLowerCase();
@@ -153,13 +151,16 @@ export class GoogleSyncService {
       };
 
       if (
-        customerGroupMembers.has(gc.resourceName) ||
-        nameLower.startsWith('cliente')
+        !existingCustomerGoogleIds.has(gc.resourceName) &&
+        (customerGroupMembers.has(gc.resourceName) ||
+          nameLower.startsWith('cliente'))
       ) {
         toImportAsCustomers.push(record);
-      } else if (
-        supplierGroupMembers.has(gc.resourceName) ||
-        nameLower.startsWith('prov')
+      }
+      if (
+        !existingSupplierGoogleIds.has(gc.resourceName) &&
+        (supplierGroupMembers.has(gc.resourceName) ||
+          nameLower.startsWith('prov'))
       ) {
         toImportAsSuppliers.push(record);
       }
