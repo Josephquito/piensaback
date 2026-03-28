@@ -285,11 +285,12 @@ export class StreamingAccountsService {
   // READ
   // =========================
   // En streaming-accounts.service.ts
-  async findAll(companyId: number, limit = 100) {
+  async findAll(companyId: number, limit = 100, platformId?: number) {
     return this.prisma.streamingAccount.findMany({
       where: {
         companyId,
         status: { not: StreamingAccountStatus.DELETED },
+        ...(platformId ? { platformId } : {}), // ← solo si viene
       },
       select: ACCOUNT_SELECT,
       orderBy: { createdAt: 'desc' },

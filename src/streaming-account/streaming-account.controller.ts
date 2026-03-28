@@ -49,8 +49,16 @@ export class StreamingAccountsController {
 
   @Get()
   @RequirePermissions('STREAMING_ACCOUNTS:READ')
-  findAll(@Req() req: RequestWithUser, @Query('limit') limit?: string) {
-    return this.service.findAll(req.companyId!, limit ? Number(limit) : 100);
+  findAll(
+    @Req() req: RequestWithUser,
+    @Query('limit') limit?: string,
+    @Query('platformId') platformId?: string, // ← agrega esto
+  ) {
+    return this.service.findAll(
+      req.companyId!,
+      limit ? Number(limit) : 100,
+      platformId ? Number(platformId) : undefined, // ← y esto
+    );
   }
 
   @Get('profiles/all')
