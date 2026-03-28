@@ -15,6 +15,8 @@ import {
   CustomerStatusFilter,
   SortOrder,
 } from './dto/customer-query.dto';
+import { GoogleAuthService } from '../google/google-auth.service';
+import { GoogleContactsService } from '../google/google-contacts.service';
 
 const CUSTOMER_SELECT = {
   id: true,
@@ -31,7 +33,28 @@ const CUSTOMER_SELECT = {
 
 @Injectable()
 export class CustomersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly googleAuth: GoogleAuthService,
+    private readonly googleContacts: GoogleContactsService,
+  ) {}
+
+  // ─── Google sync helper ────────────────────────────────────────────
+
+  private async getGoogleContext(companyId: number) {
+    const company = await this.prisma.company.findUnique({
+      where: { id: companyId },
+      select: {
+        googleConnected: true,
+        googleGroupCustomers: true,
+      },
+    });
+    if (!company?.googleConnected) return null;
+    const accessToken = await this.googleAuth.getAccessToken(companyId);
+    return { accessToken, groupResourceName: company.googleGroupCustomers };
+  }
+
+  // ─── Helpers ───────────────────────────────────────────────────────
 
   private assertNotEmployee(actor: CurrentUserJwt) {
     if (actor.role === BaseRole.EMPLOYEE) {
@@ -100,6 +123,8 @@ export class CustomersService {
         : { [field]: dir };
     return [primary, { id: 'asc' }];
   }
+
+  // ─── CRUD ──────────────────────────────────────────────────────────
 
   async findAll(companyId: number, query: CustomerQueryDto) {
     const page = query.page ?? 1;
@@ -181,7 +206,7 @@ export class CustomersService {
   ) {
     this.assertNotEmployee(actor);
     try {
-      return await this.prisma.customer.create({
+      const customer = await this.prisma.customer.create({
         data: {
           companyId,
           name: dto.name,
@@ -191,8 +216,13 @@ export class CustomersService {
           notes: dto.notes ?? null,
           balance: dto.balance ?? null,
         },
-        select: CUSTOMER_SELECT,
+        select: { ...CUSTOMER_SELECT, id: true },
       });
+
+      // Sync → Google (fire and forget, no bloquea la respuesta)
+      this.syncCreateToGoogle(customer, companyId).catch(() => null);
+
+      return customer;
     } catch (e: any) {
       if (e?.code === 'P2002')
         throw new BadRequestException(
@@ -214,7 +244,7 @@ export class CustomersService {
     if (!hasChanges)
       throw new BadRequestException('No hay campos para actualizar.');
     try {
-      return await this.prisma.customer.update({
+      const customer = await this.prisma.customer.update({
         where: { id },
         data: {
           ...(dto.name !== undefined ? { name: dto.name } : {}),
@@ -228,8 +258,13 @@ export class CustomersService {
           ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
           ...(dto.balance !== undefined ? { balance: dto.balance } : {}),
         },
-        select: CUSTOMER_SELECT,
+        select: { ...CUSTOMER_SELECT, id: true, googleContactId: true },
       });
+
+      // Sync → Google
+      this.syncUpdateToGoogle(customer, companyId).catch(() => null);
+
+      return customer;
     } catch (e: any) {
       if (e?.code === 'P2002')
         throw new BadRequestException(
@@ -241,9 +276,15 @@ export class CustomersService {
 
   async remove(id: number, companyId: number, actor: CurrentUserJwt) {
     this.assertNotEmployee(actor);
-    await this.findAndAssert(id, companyId);
+    const customer = await this.findAndAssert(id, companyId);
     try {
       await this.prisma.customer.delete({ where: { id } });
+
+      // Sync → Google
+      this.syncDeleteToGoogle(customer.googleContactId, companyId).catch(
+        () => null,
+      );
+
       return { ok: true, deletedId: id };
     } catch (e: any) {
       if (
@@ -257,6 +298,82 @@ export class CustomersService {
       throw e;
     }
   }
+
+  // ─── Google sync privados ──────────────────────────────────────────
+
+  private async syncCreateToGoogle(
+    customer: {
+      id: number;
+      name: string;
+      contact: string;
+      notes?: string | null;
+    },
+    companyId: number,
+  ) {
+    const ctx = await this.getGoogleContext(companyId);
+    if (!ctx) return;
+
+    const resourceName = await this.googleContacts.createContact(
+      ctx.accessToken,
+      {
+        name: customer.name,
+        phone: customer.contact,
+        notes: customer.notes ?? undefined,
+      },
+    );
+
+    // Asignar al grupo Clientes
+    if (ctx.groupResourceName) {
+      await this.googleContacts.addContactToGroup(
+        ctx.accessToken,
+        ctx.groupResourceName,
+        resourceName,
+      );
+    }
+
+    // Guardar googleContactId en BD
+    await this.prisma.customer.update({
+      where: { id: customer.id },
+      data: { googleContactId: resourceName },
+    });
+  }
+
+  private async syncUpdateToGoogle(
+    customer: {
+      googleContactId?: string | null;
+      name: string;
+      contact: string;
+      notes?: string | null;
+    },
+    companyId: number,
+  ) {
+    if (!customer.googleContactId) return;
+    const ctx = await this.getGoogleContext(companyId);
+    if (!ctx) return;
+
+    await this.googleContacts.updateContact(
+      ctx.accessToken,
+      customer.googleContactId,
+      {
+        name: customer.name,
+        phone: customer.contact,
+        notes: customer.notes ?? undefined,
+      },
+    );
+  }
+
+  private async syncDeleteToGoogle(
+    googleContactId: string | null,
+    companyId: number,
+  ) {
+    if (!googleContactId) return;
+    const ctx = await this.getGoogleContext(companyId);
+    if (!ctx) return;
+
+    await this.googleContacts.deleteContact(ctx.accessToken, googleContactId);
+  }
+
+  // ─── Resto de métodos sin cambios ──────────────────────────────────
 
   async getHistory(id: number, companyId: number, query: CustomerQueryDto) {
     const customer = await this.prisma.customer.findFirst({

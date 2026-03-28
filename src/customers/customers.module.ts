@@ -6,10 +6,12 @@ import { CustomersController } from './customers.controller';
 import { CustomersService } from './customers.service';
 import { PrismaModule } from '../../prisma/prisma.module';
 import { CustomersImportExportService } from './customers-import-export.service';
+import { GoogleModule } from '../google/google-auth.module';
 
 @Module({
   imports: [
     PrismaModule,
+    GoogleModule,
     // Multer en memoria — el buffer se procesa en el servicio
     MulterModule.register({ storage: memoryStorage() }),
   ],

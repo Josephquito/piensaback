@@ -151,16 +151,24 @@ model Company {
   phone       String
   status      CompanyStatus @default(ACTIVE)
 
+  googleRefreshToken        String?  @map("google_refresh_token")
+  googleConnected           Boolean  @default(false) @map("google_connected")
+  googleGroupCustomers      String?  @map("google_group_customers")   // resourceName del grupo
+  googleGroupSuppliers      String?  @map("google_group_suppliers")   // resourceName del grupo
+
+
   owner User @relation("CompanyOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
 
   users      CompanyUser[]
   suppliers  Supplier[]
   customers  Customer[]
 
-  streamingAccounts StreamingAccount[]
-  streamingSales    StreamingSale[]
-  costItems         CostItem[]
-  kardexMovements   KardexMovement[]
+  streamingAccounts  StreamingAccount[]
+  streamingSales     StreamingSale[]
+  costItems          CostItem[]
+  kardexMovements    KardexMovement[]
+  streamingPlatforms StreamingPlatform[]
+  profileLabels      ProfileLabel[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt      @map("updated_at")
@@ -168,10 +176,7 @@ model Company {
   @@index([ownerUserId])
   @@index([status])
   @@map("companies")
-  streamingPlatforms StreamingPlatform[]
-  profileLabels ProfileLabel[]
 }
-
 model CompanyUser {
   id        Int               @id @default(autoincrement())
   companyId Int               @map("company_id")
@@ -224,15 +229,17 @@ model UserPermission {
 }
 
 model Supplier {
-  id        Int      @id @default(autoincrement())
-  companyId Int      @map("company_id")
+  id        Int     @id @default(autoincrement())
+  companyId Int     @map("company_id")
   name      String
   contact   String
-  notes     String?                                          // ← nuevo
-  balance         Decimal @db.Decimal(12, 4) @default(0)   // ← reemplaza historicalSpend
+  notes     String?
+  balance   Decimal @db.Decimal(12, 4) @default(0)
 
-  company   Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  accounts  StreamingAccount[]
+  googleContactId String? @map("google_contact_id")
+
+  company  Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  accounts StreamingAccount[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt      @map("updated_at")
@@ -241,21 +248,22 @@ model Supplier {
   @@unique([companyId, name])
   @@map("suppliers")
 }
+
 model Customer {
-  id        Int            @id @default(autoincrement())
-  companyId Int            @map("company_id")
-  name      String
-  contact   String
-  source    CustomerSource?
-  sourceNote String?       @map("source_note") // texto libre cuando source = OTHER
+  id           Int             @id @default(autoincrement())
+  companyId    Int             @map("company_id")
+  name         String
+  contact      String
+  source       CustomerSource?
+  sourceNote   String?         @map("source_note")
+  notes        String?
+  balance      String?
+  lastPurchaseAt DateTime?     @map("last_purchase_at")
 
-  notes     String?
-  balance   String?        // saldo editable como nota, no calculado
+  googleContactId String? @map("google_contact_id")
 
-  lastPurchaseAt DateTime? @map("last_purchase_at") // se actualiza al crear venta
-
-  company   Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  sales     StreamingSale[]
+  company Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  sales   StreamingSale[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt      @map("updated_at")

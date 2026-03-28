@@ -25,6 +25,7 @@ import { ReportsModule } from './reports/reports.module';
 import { ScheduleModule } from '@nestjs/schedule';
 import { StreamingLabelsModule } from './streaming-labels/streaming-labels.module';
 import { StreamingImportModule } from './streaming-import/streaming-import.module';
+import { GoogleModule } from './google/google-auth.module';
 
 @Module({
   imports: [
@@ -46,6 +47,7 @@ import { StreamingImportModule } from './streaming-import/streaming-import.modul
     StreamingLabelsModule,
 
     StreamingImportModule,
+    GoogleModule,
   ],
   controllers: [AppController],
   providers: [
