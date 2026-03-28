@@ -48,7 +48,6 @@ export class GoogleSyncService {
           accessToken,
           { name: c.name, phone: c.contact, notes: c.notes ?? undefined },
         );
-
         if (company.googleGroupCustomers) {
           await this.googleContacts.addContactToGroup(
             accessToken,
@@ -56,12 +55,10 @@ export class GoogleSyncService {
             resourceName,
           );
         }
-
         await this.prisma.customer.update({
           where: { id: c.id },
           data: { googleContactId: resourceName },
         });
-
         exported++;
       } catch {
         // Continuar con el siguiente si uno falla
@@ -80,7 +77,6 @@ export class GoogleSyncService {
           accessToken,
           { name: s.name, phone: s.contact, notes: s.notes ?? undefined },
         );
-
         if (company.googleGroupSuppliers) {
           await this.googleContacts.addContactToGroup(
             accessToken,
@@ -88,12 +84,10 @@ export class GoogleSyncService {
             resourceName,
           );
         }
-
         await this.prisma.supplier.update({
           where: { id: s.id },
           data: { googleContactId: resourceName },
         });
-
         exported++;
       } catch {
         // Continuar con el siguiente si uno falla
@@ -115,51 +109,79 @@ export class GoogleSyncService {
       ...existingSupplierIds.map((s) => s.googleContactId),
     ]);
 
-    // Contactos en Google que pertenecen al grupo Clientes
     const customerGroupMembers = await this.getGroupMembers(
       accessToken,
       company.googleGroupCustomers,
     );
-    // Contactos en Google que pertenecen al grupo Proveedores
     const supplierGroupMembers = await this.getGroupMembers(
       accessToken,
       company.googleGroupSuppliers,
     );
 
+    console.log(`Total Google contacts: ${googleContacts.length}`);
+    console.log(`Known IDs en BD: ${knownIds.size}`);
+    console.log(`Grupo Clientes members: ${customerGroupMembers.size}`);
+    console.log(`Grupo Proveedores members: ${supplierGroupMembers.size}`);
+
+    const toImportAsCustomers: {
+      companyId: number;
+      name: string;
+      contact: string;
+      notes: string | null;
+      googleContactId: string;
+    }[] = [];
+
+    const toImportAsSuppliers: {
+      companyId: number;
+      name: string;
+      contact: string;
+      notes: string | null;
+      googleContactId: string;
+    }[] = [];
+
     for (const gc of googleContacts) {
       if (knownIds.has(gc.resourceName)) continue;
       if (!gc.name && !gc.phone) continue;
 
-      try {
-        if (customerGroupMembers.has(gc.resourceName)) {
-          // Importar como cliente
-          await this.prisma.customer.create({
-            data: {
-              companyId,
-              name: gc.name || gc.phone,
-              contact: gc.phone || '',
-              notes: gc.notes ?? null,
-              googleContactId: gc.resourceName,
-            },
-          });
-          imported++;
-        } else if (supplierGroupMembers.has(gc.resourceName)) {
-          // Importar como proveedor
-          await this.prisma.supplier.create({
-            data: {
-              companyId,
-              name: gc.name || gc.phone,
-              contact: gc.phone || '',
-              notes: gc.notes ?? null,
-              googleContactId: gc.resourceName,
-            },
-          });
-          imported++;
-        }
-        // Si no pertenece a ningún grupo conocido, se ignora
-      } catch {
-        // Continuar con el siguiente si uno falla
+      const nameLower = (gc.name || '').toLowerCase();
+      const record = {
+        companyId,
+        name: gc.name || gc.phone,
+        contact: gc.phone || '',
+        notes: gc.notes ?? null,
+        googleContactId: gc.resourceName,
+      };
+
+      if (
+        customerGroupMembers.has(gc.resourceName) ||
+        nameLower.startsWith('cliente')
+      ) {
+        toImportAsCustomers.push(record);
+      } else if (
+        supplierGroupMembers.has(gc.resourceName) ||
+        nameLower.startsWith('prov')
+      ) {
+        toImportAsSuppliers.push(record);
       }
+    }
+
+    console.log(`A importar como clientes: ${toImportAsCustomers.length}`);
+    console.log(`A importar como proveedores: ${toImportAsSuppliers.length}`);
+
+    if (toImportAsCustomers.length > 0) {
+      const result = await this.prisma.customer.createMany({
+        data: toImportAsCustomers,
+        skipDuplicates: true,
+      });
+      imported += result.count;
+    }
+
+    if (toImportAsSuppliers.length > 0) {
+      const result = await this.prisma.supplier.createMany({
+        data: toImportAsSuppliers,
+        skipDuplicates: true,
+      });
+      imported += result.count;
     }
 
     // ── 4. Actualizar contactos que cambiaron en Google ────────────
@@ -224,11 +246,15 @@ export class GoogleSyncService {
 
       const res = await people.contactGroups.get({
         resourceName: groupResourceName,
-        maxMembers: 1000,
+        maxMembers: 10000, // ← subimos el límite
       });
 
+      console.log(
+        `Grupo ${groupResourceName}: ${res.data.memberResourceNames?.length ?? 0} miembros`,
+      );
       return new Set(res.data.memberResourceNames ?? []);
-    } catch {
+    } catch (e: any) {
+      console.error(`Error obteniendo miembros del grupo:`, e?.message);
       return new Set();
     }
   }

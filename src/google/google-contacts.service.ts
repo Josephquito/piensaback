@@ -119,8 +119,10 @@ export class GoogleContactsService {
     const people = this.getPeopleClient(accessToken);
     const contacts: GoogleContact[] = [];
     let pageToken: string | undefined;
+    let page = 0;
 
     do {
+      page++;
       const res = await people.people.connections.list({
         resourceName: 'people/me',
         personFields: 'names,phoneNumbers,biographies,metadata,memberships',
@@ -129,12 +131,14 @@ export class GoogleContactsService {
       });
 
       const connections = res.data.connections ?? [];
+      console.log(
+        `Página ${page}: ${connections.length} contactos, nextPageToken: ${!!res.data.nextPageToken}`,
+      );
 
       for (const c of connections) {
         const name = c.names?.[0]?.givenName ?? '';
         const phone = c.phoneNumbers?.[0]?.value ?? '';
         if (!name && !phone) continue;
-
         contacts.push({
           resourceName: c.resourceName!,
           name,
@@ -147,6 +151,7 @@ export class GoogleContactsService {
       pageToken = res.data.nextPageToken ?? undefined;
     } while (pageToken);
 
+    console.log(`Total contactos traídos: ${contacts.length}`);
     return contacts;
   }
 }
