@@ -12,18 +12,22 @@ export class StreamingSaleSchedulerService {
   @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT)
   async runDailyTasks() {
     await this.markExpiredSales();
+    await this.releaseOrphanProfiles();
     await this.markPendingRenewal();
   }
 
-  private async markExpiredSales() {
-    // inicio de hoy en UTC — solo vencen las que están antes de hoy
+  // Ventas ACTIVE cuya cutoffDate ya pasó → EXPIRED
+  // Solo aplica a cuentas ACTIVE — las de cuentas EXPIRED/INACTIVE
+  // las pausa el StreamingAccountSchedulerService
+  async markExpiredSales() {
     const startOfToday = new Date();
     startOfToday.setUTCHours(0, 0, 0, 0);
 
     const result = await this.prisma.streamingSale.updateMany({
       where: {
         status: SaleStatus.ACTIVE,
-        cutoffDate: { lt: startOfToday }, // vencida = antes de hoy
+        cutoffDate: { lt: startOfToday },
+        account: { status: 'ACTIVE' }, // ← solo cuentas activas
       },
       data: {
         status: SaleStatus.EXPIRED,
@@ -36,10 +40,39 @@ export class StreamingSaleSchedulerService {
     }
   }
 
+  // Perfiles SOLD sin venta ACTIVE ni PAUSED → AVAILABLE
+  // Cubre ventas que expiraron y dejaron el perfil huérfano
+  async releaseOrphanProfiles() {
+    const soldProfiles = await this.prisma.accountProfile.findMany({
+      where: {
+        status: 'SOLD',
+        account: { status: 'ACTIVE' }, // ← solo cuentas activas, las demás las maneja el otro scheduler
+      },
+      select: {
+        id: true,
+        sales: {
+          where: { status: { in: [SaleStatus.ACTIVE, SaleStatus.PAUSED] } },
+          select: { id: true },
+          take: 1,
+        },
+      },
+    });
+
+    const orphanIds = soldProfiles
+      .filter((p) => p.sales.length === 0)
+      .map((p) => p.id);
+
+    if (orphanIds.length > 0) {
+      await this.prisma.accountProfile.updateMany({
+        where: { id: { in: orphanIds } },
+        data: { status: 'AVAILABLE' },
+      });
+      this.logger.log(`${orphanIds.length} perfiles liberados a AVAILABLE`);
+    }
+  }
+
   private async markPendingRenewal() {
     const now = new Date();
-
-    // inicio y fin de hoy en UTC
     const todayStart = new Date(
       Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
     );
@@ -63,11 +96,11 @@ export class StreamingSaleSchedulerService {
       );
     }
 
-    // Ventas ACTIVE con cutoffDate futura que quedaron en PENDING por error → NOT_APPLICABLE
+    // Ventas futuras que quedaron en PENDING por error → NOT_APPLICABLE
     const resetResult = await this.prisma.streamingSale.updateMany({
       where: {
         status: SaleStatus.ACTIVE,
-        cutoffDate: { gte: todayEnd }, // futuro = desde mañana en adelante
+        cutoffDate: { gte: todayEnd },
         renewalStatus: RenewalMessageStatus.PENDING,
       },
       data: { renewalStatus: RenewalMessageStatus.NOT_APPLICABLE },

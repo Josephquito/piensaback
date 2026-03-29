@@ -32,6 +32,7 @@ import { ReplacePaidDto } from './dto/replace-paid.dto';
 import { ReplaceFromInventoryDto } from './dto/replace-from-inventory.dto';
 import { CorrectCostDto } from './dto/correct-cost.dto';
 import type { RequestWithUser } from '../common/types/request-with-user.type';
+import { StreamingAccountSchedulerService } from './streaming-account-scheduler.service';
 
 @Controller('streaming-accounts')
 @UseGuards(JwtAuthGuard, PermissionsGuard, CompanyScopeGuard)
@@ -45,6 +46,7 @@ export class StreamingAccountsController {
     private readonly costCorrectionService: StreamingAccountCostCorrectionService,
     private readonly deletionService: StreamingAccountDeletionService,
     private readonly refundService: StreamingSaleRefundService,
+    private readonly accountScheduler: StreamingAccountSchedulerService,
   ) {}
 
   @Get()

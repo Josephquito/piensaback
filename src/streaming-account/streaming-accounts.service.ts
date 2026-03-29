@@ -355,7 +355,12 @@ export class StreamingAccountsService {
           },
         },
         sales: {
-          where: { status: { in: [SaleStatus.ACTIVE, SaleStatus.PAUSED] } },
+          where: {
+            status: {
+              in: [SaleStatus.ACTIVE, SaleStatus.PAUSED, SaleStatus.EXPIRED],
+            },
+          },
+
           select: {
             id: true,
             salePrice: true,
