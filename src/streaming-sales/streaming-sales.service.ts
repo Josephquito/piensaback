@@ -422,6 +422,17 @@ export class StreamingSalesService {
         'Solo se pueden renovar ventas activas o expiradas.',
       );
 
+    // ← verificar estado de la cuenta
+    const account = await this.prisma.streamingAccount.findUnique({
+      where: { id: sale.accountId },
+      select: { status: true },
+    });
+
+    if (account?.status === 'EXPIRED' || account?.status === 'INACTIVE')
+      throw new BadRequestException(
+        'No se puede renovar una venta de una cuenta inactiva o vencida.',
+      );
+
     const saleDate = this.parseDate(dto.saleDate, 'saleDate');
     const salePrice = this.parseDecimal(dto.salePrice, 'salePrice');
     const cutoffDate = this.addDays(saleDate, dto.daysAssigned);

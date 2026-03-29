@@ -87,9 +87,10 @@ export class StreamingSaleTransferService {
 
     if (
       targetAccount.status === 'DELETED' ||
-      targetAccount.status === 'INACTIVE'
+      targetAccount.status === 'INACTIVE' ||
+      targetAccount.status === 'EXPIRED'
     )
-      throw new BadRequestException('La cuenta destino no está disponible.');
+      throw new BadRequestException('La cuenta destino debe estar activa.');
 
     // ── 3) Buscar perfil disponible en cuenta destino ────────────────
     const targetProfile = await this.prisma.accountProfile.findFirst({
