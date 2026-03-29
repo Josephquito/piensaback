@@ -361,9 +361,20 @@ export class StreamingSalesService {
         : this.daysRemainingByDate(sale.cutoffDate, today);
 
     return this.prisma.$transaction(async (tx) => {
+      // ← verificar estado de la cuenta
+      const account = await tx.streamingAccount.findUnique({
+        where: { id: sale.accountId },
+        select: { status: true },
+      });
+
+      const profileStatus =
+        account?.status === 'EXPIRED' || account?.status === 'INACTIVE'
+          ? 'BLOCKED'
+          : 'AVAILABLE';
+
       await tx.accountProfile.update({
         where: { id: sale.profileId },
-        data: { status: 'AVAILABLE' },
+        data: { status: profileStatus },
       });
 
       const updatedSale = await tx.streamingSale.update({

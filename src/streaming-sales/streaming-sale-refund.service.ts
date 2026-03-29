@@ -38,9 +38,20 @@ export class StreamingSaleRefundService {
     const newBalance = currentBalance.add(sale.creditAmount).toFixed(2);
 
     return this.prisma.$transaction(async (tx) => {
+      // ← verificar estado de la cuenta
+      const account = await tx.streamingAccount.findUnique({
+        where: { id: sale.accountId },
+        select: { status: true },
+      });
+
+      const profileStatus =
+        account?.status === 'EXPIRED' || account?.status === 'INACTIVE'
+          ? 'BLOCKED'
+          : 'AVAILABLE';
+
       await tx.accountProfile.update({
         where: { id: sale.profileId },
-        data: { status: 'AVAILABLE' },
+        data: { status: profileStatus }, // ← BLOCKED o AVAILABLE según cuenta
       });
 
       const updatedSale = await tx.streamingSale.update({
@@ -66,9 +77,15 @@ export class StreamingSaleRefundService {
   async emptyAll(accountId: number, companyId: number, today: Date) {
     const account = await this.prisma.streamingAccount.findFirst({
       where: { id: accountId, companyId },
-      select: { id: true, platformId: true },
+      select: { id: true, platformId: true, status: true }, // ← agrega status
     });
     if (!account) throw new BadRequestException('Cuenta no encontrada.');
+
+    // ← determinar estado del perfil según cuenta
+    const profileStatus =
+      account.status === 'EXPIRED' || account.status === 'INACTIVE'
+        ? 'BLOCKED'
+        : 'AVAILABLE';
 
     const activeSales = await this.prisma.streamingSale.findMany({
       where: {
@@ -114,7 +131,7 @@ export class StreamingSaleRefundService {
 
         await tx.accountProfile.update({
           where: { id: sale.profileId },
-          data: { status: 'AVAILABLE' },
+          data: { status: profileStatus }, // ← BLOCKED o AVAILABLE según cuenta
         });
 
         await tx.streamingSale.update({
