@@ -33,8 +33,9 @@ export class StreamingSaleRefundService {
     });
     if (!customer) throw new BadRequestException('Cliente no encontrado.');
 
-    const currentBalance = new Prisma.Decimal(customer.balance ?? '0');
-    const newBalance = currentBalance.add(sale.creditAmount).toFixed(4);
+    const rawBalance = (customer.balance ?? '0').replace(',', '.');
+    const currentBalance = new Prisma.Decimal(rawBalance);
+    const newBalance = currentBalance.add(sale.creditAmount).toFixed(2);
 
     return this.prisma.$transaction(async (tx) => {
       await tx.accountProfile.update({

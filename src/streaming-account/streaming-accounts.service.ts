@@ -183,7 +183,6 @@ export class StreamingAccountsService {
       let accountId: number;
 
       if (deleted) {
-        // Reusar registro DELETED — compra nueva con el mismo email
         await tx.streamingAccount.update({
           where: { id: deleted.id },
           data: {
@@ -195,13 +194,30 @@ export class StreamingAccountsService {
             cutoffDate,
             totalCost,
             notes: dto.notes ?? null,
-            status: initialStatus, // ← ACTIVE o EXPIRED según días restantes
+            status: initialStatus,
           },
         });
 
+        // 1) IDs de perfiles existentes
+        const oldProfiles = await tx.accountProfile.findMany({
+          where: { accountId: deleted.id },
+          select: { id: true },
+        });
+        const oldProfileIds = oldProfiles.map((p) => p.id);
+
+        // 2) Borrar ventas que referencian esos perfiles
+        if (oldProfileIds.length > 0) {
+          await tx.streamingSale.deleteMany({
+            where: { profileId: { in: oldProfileIds } },
+          });
+        }
+
+        // 3) Borrar perfiles
         await tx.accountProfile.deleteMany({
           where: { accountId: deleted.id },
         });
+
+        // 4) Crear perfiles nuevos
         await tx.accountProfile.createMany({
           data: Array.from({ length: profilesTotal }, (_, i) => ({
             accountId: deleted.id,

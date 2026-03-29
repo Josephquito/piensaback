@@ -176,6 +176,10 @@ export class StreamingSalesService {
       );
 
     const cutoffDate = this.addDays(saleDate, dto.daysAssigned);
+    const alreadyExpired = cutoffDate < today;
+    const initialStatus = alreadyExpired
+      ? SaleStatus.EXPIRED
+      : SaleStatus.ACTIVE;
     const renewalStatus = this.isToday(cutoffDate, today)
       ? RenewalMessageStatus.PENDING
       : RenewalMessageStatus.NOT_APPLICABLE;
@@ -213,7 +217,7 @@ export class StreamingSalesService {
           costAtSale,
           dailyCost,
           notes: dto.notes ?? null,
-          status: SaleStatus.ACTIVE,
+          status: initialStatus,
           renewalStatus,
         },
         select: SALE_SELECT,
@@ -276,7 +280,12 @@ export class StreamingSalesService {
   // =========================
   // UPDATE
   // =========================
-  async update(id: number, dto: UpdateStreamingSaleDto, companyId: number, today: Date) {
+  async update(
+    id: number,
+    dto: UpdateStreamingSaleDto,
+    companyId: number,
+    today: Date,
+  ) {
     const sale = await this.findAndAssert(id, companyId);
 
     if (sale.status !== SaleStatus.ACTIVE && sale.status !== SaleStatus.PAUSED)
@@ -389,7 +398,12 @@ export class StreamingSalesService {
   // =========================
   // RENOVAR — nueva venta en mismo perfil
   // =========================
-  async renew(id: number, dto: RenewStreamingSaleDto, companyId: number, today: Date) {
+  async renew(
+    id: number,
+    dto: RenewStreamingSaleDto,
+    companyId: number,
+    today: Date,
+  ) {
     const sale = await this.findAndAssert(id, companyId);
 
     if (sale.status !== SaleStatus.ACTIVE && sale.status !== SaleStatus.EXPIRED)
