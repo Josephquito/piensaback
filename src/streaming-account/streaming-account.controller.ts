@@ -33,6 +33,8 @@ import { ReplaceFromInventoryDto } from './dto/replace-from-inventory.dto';
 import { CorrectCostDto } from './dto/correct-cost.dto';
 import type { RequestWithUser } from '../common/types/request-with-user.type';
 import { StreamingAccountSchedulerService } from './streaming-account-scheduler.service';
+import { StreamingSaleTransferService } from '../streaming-sales/streaming-sale-transfer.service';
+import { TransferProfileDto } from '../streaming-sales/dto/transfer-profile.dto';
 
 @Controller('streaming-accounts')
 @UseGuards(JwtAuthGuard, PermissionsGuard, CompanyScopeGuard)
@@ -47,7 +49,25 @@ export class StreamingAccountsController {
     private readonly deletionService: StreamingAccountDeletionService,
     private readonly refundService: StreamingSaleRefundService,
     private readonly accountScheduler: StreamingAccountSchedulerService,
+    private readonly transferService: StreamingSaleTransferService,
   ) {}
+
+  // Endpoint nuevo:
+  @Post('profiles/:profileId/transfer')
+  @RequirePermissions('STREAMING_ACCOUNTS:UPDATE')
+  transferProfile(
+    @Param('profileId', ParseIntPipe) profileId: number,
+    @Body() dto: TransferProfileDto,
+    @Req() req: RequestWithUser,
+    @UserToday() today: Date,
+  ) {
+    return this.transferService.transferProfile(
+      profileId,
+      dto,
+      req.companyId!,
+      today,
+    );
+  }
 
   @Get()
   @RequirePermissions('STREAMING_ACCOUNTS:READ')

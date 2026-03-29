@@ -13,6 +13,7 @@ import { StreamingAccountSchedulerService } from './streaming-account-scheduler.
 import { StreamingSalesModule } from '../streaming-sales/streaming-sales.module';
 import { StreamingAccountUpdateService } from './streaming-account-update.service';
 import { StreamingAccountProfilesService } from './streaming-account-profiles.service';
+import { StreamingSaleTransferService } from '../streaming-sales/streaming-sale-transfer.service';
 
 @Module({
   imports: [PrismaModule, KardexModule, StreamingSalesModule],
@@ -26,6 +27,7 @@ import { StreamingAccountProfilesService } from './streaming-account-profiles.se
     StreamingAccountSchedulerService,
     StreamingAccountUpdateService,
     StreamingAccountProfilesService,
+    StreamingSaleTransferService,
   ],
   exports: [StreamingAccountsService],
 })

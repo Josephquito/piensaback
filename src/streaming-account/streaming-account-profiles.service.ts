@@ -23,6 +23,12 @@ export class StreamingAccountProfilesService {
   // =========================
   async addProfile(id: number, companyId: number, today: Date) {
     const account = await this.accounts.findAndAssert(id, companyId);
+
+    if (account.status !== StreamingAccountStatus.ACTIVE)
+      throw new BadRequestException(
+        'Solo se pueden agregar perfiles a cuentas activas.',
+      );
+
     const newTotal = account.profilesTotal + 1;
     const daysLeft = this.accounts.daysRemainingByDate(
       account.cutoffDate,

@@ -18,12 +18,10 @@ import { CompanyScopeGuard } from '../common/guards/company-scope.guard';
 import { RequirePermissions } from '../common/decorators/require-permissions.decorator';
 import { StreamingSalesService } from './streaming-sales.service';
 import { StreamingSalePauseService } from './streaming-sale-pause.service';
-import { StreamingSaleTransferService } from './streaming-sale-transfer.service';
 import { StreamingSaleRefundService } from './streaming-sale-refund.service';
 import { CreateStreamingSaleDto } from './dto/create-streaming-sale.dto';
 import { UpdateStreamingSaleDto } from './dto/update-streaming-sale.dto';
 import { RenewStreamingSaleDto } from './dto/renew-streaming-sale.dto';
-import { TransferProfileDto } from './dto/transfer-profile.dto';
 import { UpdateRenewalStatusDto } from './dto/update-renewal-status.dto';
 import type { RequestWithUser } from '../common/types/request-with-user.type';
 
@@ -33,7 +31,6 @@ export class StreamingSalesController {
   constructor(
     private readonly service: StreamingSalesService,
     private readonly pauseService: StreamingSalePauseService,
-    private readonly transferService: StreamingSaleTransferService,
     private readonly refundService: StreamingSaleRefundService,
   ) {}
 
@@ -126,18 +123,6 @@ export class StreamingSalesController {
     @UserToday() today: Date,
   ) {
     return this.pauseService.resume(id, req.companyId!, today);
-  }
-
-  // Transferir cliente a otro perfil/cuenta de la misma plataforma
-  @Post(':id/transfer')
-  @RequirePermissions('STREAMING_SALES:UPDATE')
-  transfer(
-    @Param('id', ParseIntPipe) id: number,
-    @Body() dto: TransferProfileDto,
-    @Req() req: RequestWithUser,
-    @UserToday() today: Date,
-  ) {
-    return this.transferService.transfer(id, dto, req.companyId!, today);
   }
 
   // Reembolsar saldo al cliente y cerrar el perfil

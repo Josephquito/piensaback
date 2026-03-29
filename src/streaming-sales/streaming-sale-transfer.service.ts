@@ -1,162 +1,184 @@
+// streaming-account-transfer.service.ts
 import { BadRequestException, Injectable } from '@nestjs/common';
-import {
-  KardexRefType,
-  SaleStatus,
-  RenewalMessageStatus,
-} from '@prisma/client';
+import { KardexRefType, SaleStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { KardexService } from '../kardex/kardex.service';
-import { StreamingSalesService, SALE_SELECT } from './streaming-sales.service';
+import {
+  StreamingAccountsService,
+  ACCOUNT_SELECT,
+} from '../streaming-account/streaming-accounts.service';
 import { TransferProfileDto } from './dto/transfer-profile.dto';
-import { daysRemainingFrom } from '../common/utils/date.utils';
 
 @Injectable()
 export class StreamingSaleTransferService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly kardex: KardexService,
-    private readonly sales: StreamingSalesService,
+    private readonly accounts: StreamingAccountsService,
   ) {}
 
-  async transfer(id: number, dto: TransferProfileDto, companyId: number, today: Date) {
-    const sale = await this.sales.findAndAssert(id, companyId);
+  async transferProfile(
+    profileId: number,
+    dto: TransferProfileDto,
+    companyId: number,
+    today: Date,
+  ) {
+    // ── 1) Cargar perfil origen con su venta activa ──────────────────
+    const originProfile = await this.prisma.accountProfile.findFirst({
+      where: { id: profileId },
+      select: {
+        id: true,
+        accountId: true,
+        profileNo: true,
+        status: true,
+        account: {
+          select: {
+            id: true,
+            companyId: true,
+            platformId: true,
+            status: true,
+            cutoffDate: true,
+          },
+        },
+        sales: {
+          where: { status: { in: [SaleStatus.ACTIVE, SaleStatus.PAUSED] } },
+          select: {
+            id: true,
+            cutoffDate: true,
+            dailyCost: true,
+            daysAssigned: true,
+            status: true,
+            pausedDaysLeft: true,
+          },
+          take: 1,
+        },
+      },
+    });
+
+    if (!originProfile) throw new BadRequestException('Perfil no encontrado.');
+    if (originProfile.account.companyId !== companyId)
+      throw new BadRequestException('Perfil no accesible.');
+    if (originProfile.status !== 'SOLD')
+      throw new BadRequestException(
+        'Solo se pueden trasladar perfiles vendidos.',
+      );
+
+    const sale = originProfile.sales[0];
+    if (!sale)
+      throw new BadRequestException(
+        'El perfil no tiene venta activa para trasladar.',
+      );
+
+    // ── 2) Cargar cuenta destino ─────────────────────────────────────
+    const targetAccount = await this.accounts.findAndAssert(
+      dto.targetAccountId,
+      companyId,
+    );
+
+    if (targetAccount.id === originProfile.accountId)
+      throw new BadRequestException(
+        'La cuenta destino es la misma que la origen.',
+      );
+
+    if (targetAccount.platformId !== originProfile.account.platformId)
+      throw new BadRequestException(
+        'Solo se pueden trasladar perfiles entre cuentas de la misma plataforma.',
+      );
 
     if (
-      sale.status !== SaleStatus.ACTIVE &&
-      sale.status !== SaleStatus.EXPIRED &&
-      sale.status !== SaleStatus.PAUSED
+      targetAccount.status === 'DELETED' ||
+      targetAccount.status === 'INACTIVE'
     )
-      throw new BadRequestException(
-        'Solo se pueden transferir ventas activas, expiradas o pausadas.',
-      );
+      throw new BadRequestException('La cuenta destino no está disponible.');
 
-    const targetAccount = await this.prisma.streamingAccount.findFirst({
-      where: { id: dto.targetAccountId, companyId },
-      select: { id: true, platformId: true, status: true },
-    });
-    if (!targetAccount)
-      throw new BadRequestException('Cuenta destino no encontrada.');
-
-    if (targetAccount.platformId !== sale.platformId)
-      throw new BadRequestException(
-        'La cuenta destino debe ser de la misma plataforma.',
-      );
-
+    // ── 3) Buscar perfil disponible en cuenta destino ────────────────
     const targetProfile = await this.prisma.accountProfile.findFirst({
-      where: {
-        id: dto.targetProfileId,
-        accountId: dto.targetAccountId,
-        status: 'AVAILABLE',
-      },
-      select: { id: true },
+      where: { accountId: targetAccount.id, status: 'AVAILABLE' },
+      orderBy: { profileNo: 'asc' },
+      select: { id: true, profileNo: true },
     });
+
     if (!targetProfile)
       throw new BadRequestException(
-        'Perfil destino no disponible o no pertenece a la cuenta destino.',
+        'La cuenta destino no tiene perfiles disponibles.',
       );
 
-    // días restantes usando helper por fecha
+    // ── 4) Calcular días restantes de la venta ───────────────────────
     const daysLeft =
-      sale.status === SaleStatus.PAUSED && sale.pausedDaysLeft != null
-        ? sale.pausedDaysLeft
-        : daysRemainingFrom(sale.cutoffDate, today);
+      sale.status === 'PAUSED' && sale.pausedDaysLeft != null
+        ? Number(sale.pausedDaysLeft)
+        : this.accounts.daysRemainingByDate(sale.cutoffDate, today);
 
-    // nueva cutoffDate desde inicio de hoy + daysLeft
-    const newCutoffDate = new Date(today);
-    newCutoffDate.setUTCDate(today.getUTCDate() + daysLeft);
+    // ── 5) Transacción ───────────────────────────────────────────────
+    await this.prisma.$transaction(
+      async (tx) => {
+        // a) Perfil origen → AVAILABLE
+        await tx.accountProfile.update({
+          where: { id: originProfile.id },
+          data: { status: 'AVAILABLE' },
+        });
 
-    // renewalStatus comparando strings UTC
-    const todayStr = today.toISOString().split('T')[0];
-    const cutoffStr = newCutoffDate.toISOString().split('T')[0];
-    const renewalStatus =
-      daysLeft === 0 || todayStr !== cutoffStr
-        ? RenewalMessageStatus.NOT_APPLICABLE
-        : RenewalMessageStatus.PENDING;
+        // b) Perfil destino → SOLD
+        await tx.accountProfile.update({
+          where: { id: targetProfile.id },
+          data: { status: 'SOLD' },
+        });
 
-    return this.prisma.$transaction(async (tx) => {
-      // 1) Venta original → CLOSED
-      await tx.streamingSale.update({
-        where: { id: sale.id },
-        data: { status: SaleStatus.CLOSED },
-      });
-
-      // 2) Perfil origen → AVAILABLE
-      await tx.accountProfile.update({
-        where: { id: sale.profileId },
-        data: { status: 'AVAILABLE' },
-      });
-
-      // 3) Kardex IN — devuelve días restantes de cuenta origen
-      if (daysLeft > 0) {
-        await this.kardex.registerIn(
-          {
-            companyId,
-            platformId: sale.platformId,
-            qty: daysLeft,
-            unitCost: sale.dailyCost,
-            refType: KardexRefType.PROFILE_TRANSFER,
-            accountId: sale.accountId,
+        // c) Reasignar venta al perfil y cuenta destino
+        await tx.streamingSale.update({
+          where: { id: sale.id },
+          data: {
+            profileId: targetProfile.id,
+            accountId: targetAccount.id,
           },
-          tx,
-        );
-      }
+        });
 
-      // 4) Kardex OUT — consume días de cuenta destino
-      const { unitCost: newDailyCost } = await this.kardex.registerOut(
-        {
-          companyId,
-          platformId: targetAccount.platformId,
-          qty: daysLeft > 0 ? daysLeft : sale.daysAssigned,
-          refType: KardexRefType.PROFILE_TRANSFER,
-          accountId: targetAccount.id,
-        },
-        tx,
-      );
+        // d) Kardex: devolver días al stock desde cuenta origen
+        if (daysLeft > 0) {
+          await this.kardex.registerIn(
+            {
+              companyId,
+              platformId: originProfile.account.platformId,
+              qty: daysLeft,
+              unitCost: sale.dailyCost,
+              refType: KardexRefType.PROFILE_TRANSFER,
+              accountId: originProfile.accountId,
+            },
+            tx,
+          );
 
-      const newCostAtSale = newDailyCost.mul(
-        daysLeft > 0 ? daysLeft : sale.daysAssigned,
-      );
+          // e) Kardex: sacar días del stock para cuenta destino
+          await this.kardex.registerOut(
+            {
+              companyId,
+              platformId: targetAccount.platformId,
+              qty: daysLeft,
+              refType: KardexRefType.PROFILE_TRANSFER,
+              accountId: targetAccount.id,
+            },
+            tx,
+          );
 
-      // 5) Crear nueva venta en cuenta destino
-      const newSale = await tx.streamingSale.create({
-        data: {
-          companyId,
-          platformId: targetAccount.platformId,
-          accountId: targetAccount.id,
-          profileId: targetProfile.id,
-          customerId: sale.customerId,
-          salePrice: sale.salePrice,
-          saleDate: today,
-          daysAssigned: daysLeft > 0 ? daysLeft : sale.daysAssigned,
-          cutoffDate: newCutoffDate,
-          costAtSale: newCostAtSale,
-          dailyCost: newDailyCost,
-          notes: sale.notes,
-          status: SaleStatus.ACTIVE,
-          renewalStatus,
-        },
-        select: SALE_SELECT,
-      });
+          // f) Reasignar movimientos de kardex del registerOut a la venta
+          await tx.kardexMovement.updateMany({
+            where: {
+              companyId,
+              accountId: targetAccount.id,
+              refType: KardexRefType.PROFILE_TRANSFER,
+              type: 'OUT',
+              saleId: null,
+            },
+            data: { saleId: sale.id },
+          });
+        }
+      },
+      { timeout: 15000 },
+    );
 
-      // 6) Perfil destino → SOLD
-      await tx.accountProfile.update({
-        where: { id: targetProfile.id },
-        data: { status: 'SOLD' },
-      });
-
-      // 7) Vincular kardex OUT a la nueva venta
-      await tx.kardexMovement.updateMany({
-        where: {
-          companyId,
-          accountId: targetAccount.id,
-          refType: KardexRefType.PROFILE_TRANSFER,
-          type: 'OUT',
-          saleId: null,
-        },
-        data: { saleId: newSale.id },
-      });
-
-      return newSale;
+    // Retorna la cuenta origen actualizada
+    return this.prisma.streamingAccount.findUnique({
+      where: { id: originProfile.accountId },
+      select: ACCOUNT_SELECT,
     });
   }
 }
