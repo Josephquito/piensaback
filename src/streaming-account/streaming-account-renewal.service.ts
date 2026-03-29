@@ -16,7 +16,12 @@ export class StreamingAccountRenewalService {
     private readonly accounts: StreamingAccountsService,
   ) {}
 
-  async renew(id: number, dto: RenewAccountDto, companyId: number, _today: Date) {
+  async renew(
+    id: number,
+    dto: RenewAccountDto,
+    companyId: number,
+    _today: Date,
+  ) {
     const account = await this.accounts.findAndAssert(id, companyId);
 
     const newPurchaseDate = this.accounts.parseDate(
@@ -28,7 +33,6 @@ export class StreamingAccountRenewalService {
     if (!Number.isInteger(dto.durationDays) || dto.durationDays <= 0)
       throw new BadRequestException('durationDays inválido.');
 
-    // cutoffDate siempre derivado — nunca aceptar del DTO
     const newCutoffDate = new Date(
       Date.UTC(
         newPurchaseDate.getUTCFullYear(),
@@ -60,15 +64,21 @@ export class StreamingAccountRenewalService {
         },
       });
 
-      // 2) Balance proveedor
+      // 2) Desbloquear perfiles BLOCKED si la cuenta estaba EXPIRED
+      if (account.status === StreamingAccountStatus.EXPIRED) {
+        await tx.accountProfile.updateMany({
+          where: { accountId: account.id, status: 'BLOCKED' },
+          data: { status: 'AVAILABLE' },
+        });
+      }
+
+      // 3) Balance proveedor
       await tx.supplier.update({
         where: { id: account.supplierId },
         data: { balance: { decrement: newTotalCost } },
       });
 
-      // 3) Kardex IN — agregar días nuevos al stock de la plataforma
-      // No se limpia stock previo porque puede haber días válidos
-      // de otras cuentas activas de la misma plataforma
+      // 4) Kardex IN — agregar días nuevos al stock de la plataforma
       await this.kardex.registerIn(
         {
           companyId,
