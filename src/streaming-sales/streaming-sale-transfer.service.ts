@@ -66,7 +66,7 @@ export class StreamingSaleTransferService {
     const sale = originProfile.sales[0];
     if (!sale)
       throw new BadRequestException(
-        'El perfil no tiene venta activa para trasladar.',
+        'El perfil esta vencido no se puede trasladar.',
       );
 
     // ── 2) Cargar cuenta destino ─────────────────────────────────────
