@@ -14,6 +14,7 @@ import {
   RenewalMessageStatus,
   SaleStatus,
 } from '@prisma/client';
+import { isExpiredFrom, getTodayUTC } from '../common/utils/date.utils';
 
 export interface ImportWarning {
   email: string;
@@ -38,10 +39,10 @@ export class AccountImporterService {
     platformId: number,
     companyId: number,
     customerIndex: CustomerIndex,
+    today: Date = getTodayUTC(), // ← agrega con default
   ): Promise<ImportWarning[]> {
     const warnings: ImportWarning[] = [];
 
-    // Validaciones básicas
     if (!group.password) throw new Error('Contraseña vacía.');
     if (!group.purchaseDate || isNaN(group.purchaseDate.getTime()))
       throw new Error('Fecha de compra inválida.');
@@ -57,9 +58,14 @@ export class AccountImporterService {
         ? group.totalCost.div(profilesTotal).div(group.durationDays)
         : new Prisma.Decimal(0);
 
+    // ← status inicial de la cuenta según si ya venció
+    const accountExpired = isExpiredFrom(cutoffDate, today);
+    const initialAccountStatus = accountExpired
+      ? StreamingAccountStatus.EXPIRED
+      : StreamingAccountStatus.ACTIVE;
+
     await this.prisma.$transaction(
       async (tx) => {
-        // ── 1) Proveedor (Regla 4) ─────────────────────────────────────
         const supplier = await resolveSupplier(
           tx,
           companyId,
@@ -67,7 +73,6 @@ export class AccountImporterService {
           group.supplierContact,
         );
 
-        // ── 2) Resolver estado de la cuenta ───────────────────────────
         const deleted = await tx.streamingAccount.findFirst({
           where: {
             companyId,
@@ -98,10 +103,9 @@ export class AccountImporterService {
         });
 
         let accountId: number;
-        let isNew = false; // cuenta nueva o reactivada desde DELETED
+        let isNew = false;
 
         if (deleted && !existing) {
-          // ── Reactivar desde DELETED ──────────────────────────────────
           await tx.streamingAccount.update({
             where: { id: deleted.id },
             data: {
@@ -113,22 +117,32 @@ export class AccountImporterService {
               cutoffDate,
               totalCost: group.totalCost,
               notes: null,
-              status: StreamingAccountStatus.ACTIVE,
+              status: initialAccountStatus, // ← corregido
             },
           });
+
+          const oldProfiles = await tx.accountProfile.findMany({
+            where: { accountId: deleted.id },
+            select: { id: true },
+          });
+          const oldProfileIds = oldProfiles.map((p) => p.id);
+          if (oldProfileIds.length > 0) {
+            await tx.streamingSale.deleteMany({
+              where: { profileId: { in: oldProfileIds } },
+            });
+          }
           await tx.accountProfile.deleteMany({
             where: { accountId: deleted.id },
           });
+
           accountId = deleted.id;
           isNew = true;
 
-          // Balance proveedor
           await tx.supplier.update({
             where: { id: supplier.id },
             data: { balance: { decrement: group.totalCost } },
           });
         } else if (existing) {
-          // ── Cuenta activa existente: actualizar datos (Regla 1) ───────
           accountId = existing.id;
           isNew = false;
 
@@ -137,7 +151,6 @@ export class AccountImporterService {
           const newCost = group.totalCost;
           const newSupplierId = supplier.id;
 
-          // Actualizar cuenta con los nuevos datos del CSV
           await tx.streamingAccount.update({
             where: { id: accountId },
             data: {
@@ -148,10 +161,10 @@ export class AccountImporterService {
               purchaseDate: group.purchaseDate,
               cutoffDate,
               totalCost: newCost,
+              status: initialAccountStatus, // ← corregido también aquí
             },
           });
 
-          // Balance del proveedor — igual que StreamingAccountUpdateService
           if (oldSupplierId !== newSupplierId) {
             await tx.supplier.update({
               where: { id: oldSupplierId },
@@ -168,9 +181,7 @@ export class AccountImporterService {
               data: { balance: { decrement: delta } },
             });
           }
-          // Kardex NO se toca en actualización (igual que la edición manual)
         } else {
-          // ── Cuenta nueva ─────────────────────────────────────────────
           const account = await tx.streamingAccount.create({
             data: {
               companyId,
@@ -184,21 +195,19 @@ export class AccountImporterService {
               cutoffDate,
               totalCost: group.totalCost,
               notes: null,
-              status: StreamingAccountStatus.ACTIVE,
+              status: initialAccountStatus, // ← corregido
             },
             select: { id: true },
           });
           accountId = account.id;
           isNew = true;
 
-          // Balance proveedor
           await tx.supplier.update({
             where: { id: supplier.id },
             data: { balance: { decrement: group.totalCost } },
           });
         }
 
-        // ── 3) Kardex IN solo para cuentas nuevas / reactivadas ────────
         if (isNew) {
           await this.kardex.registerIn(
             {
@@ -213,7 +222,6 @@ export class AccountImporterService {
           );
         }
 
-        // ── 4) Sincronizar perfiles (Reglas 2 y 3) ─────────────────────
         const existingProfiles = await tx.accountProfile.findMany({
           where: { accountId },
           select: { id: true, profileNo: true, status: true },
@@ -223,25 +231,18 @@ export class AccountImporterService {
         );
         const csvProfileNos = new Set(group.profiles.map((p) => p.profileNo));
 
-        // Perfiles en el sistema que NO vienen en el CSV
         for (const ep of existingProfiles) {
-          if (!csvProfileNos.has(ep.profileNo)) {
-            if (ep.status === 'SOLD') {
-              // Regla 3: perfil SOLD ausente en CSV → warning, no eliminar
-              warnings.push({
-                email: group.email,
-                profileNo: ep.profileNo,
-                reason:
-                  `El perfil #${ep.profileNo} está VENDIDO en el sistema pero no aparece en el CSV. ` +
-                  `Cierra la venta manualmente y vuelve a importar.`,
-              });
-            }
-            // Si está AVAILABLE o BLOCKED y no viene en CSV simplemente se ignora
-            // (no se elimina para no romper histórico)
+          if (!csvProfileNos.has(ep.profileNo) && ep.status === 'SOLD') {
+            warnings.push({
+              email: group.email,
+              profileNo: ep.profileNo,
+              reason:
+                `El perfil #${ep.profileNo} está VENDIDO en el sistema pero no aparece en el CSV. ` +
+                `Cierra la venta manualmente y vuelve a importar.`,
+            });
           }
         }
 
-        // Crear perfiles nuevos que vienen en el CSV y no existen en el sistema
         const profilesToCreate = group.profiles.filter(
           (p) => !existingByNo.has(p.profileNo),
         );
@@ -255,7 +256,6 @@ export class AccountImporterService {
           });
         }
 
-        // ── 5) Ventas y etiquetas por perfil ──────────────────────────
         const profileWarnings = await this.processProfiles(
           tx,
           group.profiles,
@@ -264,6 +264,7 @@ export class AccountImporterService {
           platformId,
           group.email,
           customerIndex,
+          today,
         );
         warnings.push(...profileWarnings);
       },
@@ -284,6 +285,7 @@ export class AccountImporterService {
     platformId: number,
     email: string,
     customerIndex: CustomerIndex,
+    today: Date, // ← agrega
   ): Promise<ImportWarning[]> {
     const warnings: ImportWarning[] = [];
 
@@ -294,7 +296,6 @@ export class AccountImporterService {
       });
       if (!profile) continue;
 
-      // Upsert etiqueta — aplica siempre
       if (p.labelName) {
         const label = await tx.profileLabel.upsert({
           where: {
@@ -319,7 +320,6 @@ export class AccountImporterService {
         });
       }
 
-      // Sin datos de venta en el CSV → nada más que hacer
       if (
         !p.salePrice ||
         !p.saleDate ||
@@ -329,7 +329,6 @@ export class AccountImporterService {
         continue;
       }
 
-      // Resolver cliente (Regla 5)
       const customerId = resolveCustomerId(p.customerName, customerIndex);
       if (!customerId) {
         warnings.push({
@@ -343,9 +342,12 @@ export class AccountImporterService {
       }
 
       const saleCutoffDate = addDays(p.saleDate, p.saleDurationDays);
+      const saleExpired = isExpiredFrom(saleCutoffDate, today); // ← chequeo
+      const initialSaleStatus = saleExpired
+        ? SaleStatus.EXPIRED
+        : SaleStatus.ACTIVE;
 
       if (profile.status === 'SOLD') {
-        // ── Perfil ya vendido: buscar venta activa y actualizar si cambió algo ──
         const activeSale = await tx.streamingSale.findFirst({
           where: {
             profileId: profile.id,
@@ -361,7 +363,7 @@ export class AccountImporterService {
           },
         });
 
-        if (!activeSale) continue; // venta cerrada, no tocar
+        if (!activeSale) continue;
 
         const changed =
           !activeSale.salePrice.equals(p.salePrice) ||
@@ -378,19 +380,18 @@ export class AccountImporterService {
               daysAssigned: p.saleDurationDays,
               cutoffDate: saleCutoffDate,
               customerId,
+              status: initialSaleStatus, // ← actualiza status también al editar
             },
           });
-
           await tx.customer.update({
             where: { id: customerId },
             data: { lastPurchaseAt: p.saleDate },
           });
         }
-
-        continue; // venta procesada, no crear una nueva
+        continue;
       }
 
-      // ── Perfil AVAILABLE: crear venta nueva ────────────────────────────
+      // Perfil AVAILABLE: crear venta nueva
       const { unitCost: saleDailyCost } = await this.kardex.registerOut(
         {
           companyId,
@@ -423,7 +424,7 @@ export class AccountImporterService {
           costAtSale,
           dailyCost: saleDailyCost,
           notes: null,
-          status: SaleStatus.ACTIVE,
+          status: initialSaleStatus, // ← corregido
           renewalStatus: RenewalMessageStatus.NOT_APPLICABLE,
         },
         select: { id: true },
