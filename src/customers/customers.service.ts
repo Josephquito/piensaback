@@ -1,10 +1,9 @@
 import {
   BadRequestException,
-  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { BaseRole, Prisma, SaleStatus } from '@prisma/client';
+import { Prisma, SaleStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import type { CurrentUserJwt } from '../common/types/current-user-jwt.type';
 import { CreateCustomerDto } from './dto/create-customer.dto';
@@ -31,6 +30,12 @@ const CUSTOMER_SELECT = {
   updatedAt: true,
 } as const;
 
+const ACTIVE_SALE_STATUSES = [
+  SaleStatus.ACTIVE,
+  SaleStatus.PAUSED,
+  SaleStatus.EXPIRED,
+];
+
 @Injectable()
 export class CustomersService {
   constructor(
@@ -55,12 +60,6 @@ export class CustomersService {
   }
 
   // ─── Helpers ───────────────────────────────────────────────────────
-
-  private assertNotEmployee(actor: CurrentUserJwt) {
-    if (actor.role === BaseRole.EMPLOYEE) {
-      throw new ForbiddenException('EMPLOYEE no puede gestionar clientes.');
-    }
-  }
 
   private async findAndAssert(id: number, companyId: number) {
     const customer = await this.prisma.customer.findFirst({
@@ -99,12 +98,12 @@ export class CustomersService {
           where.sales = { none: {} };
           break;
         case CustomerStatusFilter.ACTIVE:
-          where.sales = { some: { status: SaleStatus.ACTIVE } };
+          where.sales = { some: { status: { in: ACTIVE_SALE_STATUSES } } };
           break;
         case CustomerStatusFilter.INACTIVE:
           where.AND = [
             { sales: { some: {} } },
-            { sales: { none: { status: SaleStatus.ACTIVE } } },
+            { sales: { none: { status: { in: ACTIVE_SALE_STATUSES } } } },
           ];
           break;
       }
@@ -141,7 +140,7 @@ export class CustomersService {
           ...CUSTOMER_SELECT,
           _count: { select: { sales: true } },
           sales: {
-            where: { status: SaleStatus.ACTIVE },
+            where: { status: { in: ACTIVE_SALE_STATUSES } },
             select: { id: true },
             take: 1,
           },
@@ -178,7 +177,7 @@ export class CustomersService {
         ...CUSTOMER_SELECT,
         _count: { select: { sales: true } },
         sales: {
-          where: { status: SaleStatus.ACTIVE },
+          where: { status: { in: ACTIVE_SALE_STATUSES } },
           select: {
             id: true,
             salePrice: true,
@@ -204,7 +203,6 @@ export class CustomersService {
     companyId: number,
     actor: CurrentUserJwt,
   ) {
-    this.assertNotEmployee(actor);
     try {
       const customer = await this.prisma.customer.create({
         data: {
@@ -219,7 +217,6 @@ export class CustomersService {
         select: { ...CUSTOMER_SELECT, id: true },
       });
 
-      // Sync → Google (fire and forget, no bloquea la respuesta)
       this.syncCreateToGoogle(customer, companyId).catch(() => null);
 
       return customer;
@@ -238,7 +235,6 @@ export class CustomersService {
     companyId: number,
     actor: CurrentUserJwt,
   ) {
-    this.assertNotEmployee(actor);
     await this.findAndAssert(id, companyId);
     const hasChanges = Object.values(dto).some((v) => v !== undefined);
     if (!hasChanges)
@@ -261,7 +257,6 @@ export class CustomersService {
         select: { ...CUSTOMER_SELECT, id: true, googleContactId: true },
       });
 
-      // Sync → Google
       this.syncUpdateToGoogle(customer, companyId).catch(() => null);
 
       return customer;
@@ -275,12 +270,10 @@ export class CustomersService {
   }
 
   async remove(id: number, companyId: number, actor: CurrentUserJwt) {
-    this.assertNotEmployee(actor);
     const customer = await this.findAndAssert(id, companyId);
     try {
       await this.prisma.customer.delete({ where: { id } });
 
-      // Sync → Google
       this.syncDeleteToGoogle(customer.googleContactId, companyId).catch(
         () => null,
       );
@@ -322,7 +315,6 @@ export class CustomersService {
       },
     );
 
-    // Asignar al grupo Clientes
     if (ctx.groupResourceName) {
       await this.googleContacts.addContactToGroup(
         ctx.accessToken,
@@ -331,7 +323,6 @@ export class CustomersService {
       );
     }
 
-    // Guardar googleContactId en BD
     await this.prisma.customer.update({
       where: { id: customer.id },
       data: { googleContactId: resourceName },
@@ -373,7 +364,7 @@ export class CustomersService {
     await this.googleContacts.deleteContact(ctx.accessToken, googleContactId);
   }
 
-  // ─── Resto de métodos sin cambios ──────────────────────────────────
+  // ─── Resto de métodos ──────────────────────────────────────────────
 
   async getHistory(id: number, companyId: number, query: CustomerQueryDto) {
     const customer = await this.prisma.customer.findFirst({
