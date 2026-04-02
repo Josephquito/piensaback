@@ -16,6 +16,7 @@ export enum CustomerSortBy {
   LAST_PURCHASE_AT = 'lastPurchaseAt',
   CREATED_AT = 'createdAt',
   BALANCE = 'balance',
+  ID = 'id',
 }
 
 export enum SortOrder {

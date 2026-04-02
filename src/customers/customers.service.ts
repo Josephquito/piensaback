@@ -120,7 +120,9 @@ export class CustomersService {
     const primary: Prisma.CustomerOrderByWithRelationInput =
       field === CustomerSortBy.LAST_PURCHASE_AT
         ? { lastPurchaseAt: { sort: dir, nulls: 'last' } }
-        : { [field]: dir };
+        : field === CustomerSortBy.ID
+          ? { id: dir }
+          : { [field]: dir };
     return [primary, { id: 'asc' }];
   }
 
@@ -131,6 +133,65 @@ export class CustomersService {
     const limit = query.limit ?? 50;
     const skip = (page - 1) * limit;
     const where = this.buildWhere(companyId, query);
+    const field = query.sortBy ?? CustomerSortBy.NAME;
+
+    // ── Orden numérico natural por nombre ─────────────────────────────────
+    if (field === CustomerSortBy.NAME) {
+      const whereConditions = this.buildRawWhere(companyId, query);
+
+      const [totalResult, customers] = await Promise.all([
+        this.prisma.customer.count({ where }),
+        this.prisma.$queryRaw<any[]>`
+        SELECT
+          c.id, c.name, c.contact, c.source, c.source_note as "sourceNote",
+          c.notes, c.balance, c.last_purchase_at as "lastPurchaseAt",
+          c.created_at as "createdAt", c.updated_at as "updatedAt",
+          COUNT(DISTINCT s.id)::int as "totalSales",
+          COUNT(DISTINCT CASE WHEN s.status IN ('ACTIVE','PAUSED','EXPIRED') THEN s.id END)::int as "activeSalesCount"
+        FROM customers c
+        LEFT JOIN streaming_sales s ON s.customer_id = c.id
+        WHERE c.company_id = ${companyId}
+        ${whereConditions}
+        GROUP BY c.id
+        ORDER BY
+          CAST(NULLIF(REGEXP_REPLACE(c.name, '[^0-9]', '', 'g'), '') AS INTEGER) ASC NULLS LAST,
+          c.name ASC
+        LIMIT ${limit} OFFSET ${skip}
+      `,
+      ]);
+
+      const data = customers.map((c: any) => ({
+        id: c.id,
+        name: c.name,
+        contact: c.contact,
+        source: c.source,
+        sourceNote: c.sourceNote,
+        notes: c.notes,
+        balance: c.balance,
+        lastPurchaseAt: c.lastPurchaseAt,
+        createdAt: c.createdAt,
+        updatedAt: c.updatedAt,
+        totalSales: c.totalSales,
+        customerStatus: this.resolveStatus(
+          c.totalSales,
+          c.activeSalesCount > 0,
+        ),
+      }));
+
+      return {
+        data,
+        meta: {
+          total: totalResult,
+          page,
+          limit,
+          totalPages: Math.ceil(totalResult / limit),
+          hasNext: page * limit < totalResult,
+          hasPrev: page > 1,
+        },
+      };
+    }
+
+    // ── Resto de sortBy ───────────────────────────────────────────────────
     const orderBy = this.buildOrderBy(query);
 
     const [total, customers] = await this.prisma.$transaction([
