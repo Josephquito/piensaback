@@ -340,24 +340,30 @@ export class CampaignsService {
   // ─── Helper contadores ────────────────────────────────────────────────────
 
   private async updateCounts(campaignId: number) {
-    const counts = await this.prisma.campaignContact.groupBy({
-      by: ['status'],
-      where: { campaignId },
-      _count: { status: true },
-    });
-
-    const map = Object.fromEntries(
-      counts.map((c) => [c.status, c._count.status]),
-    );
+    const [total, sent, responded, purchased, failed] = await Promise.all([
+      this.prisma.campaignContact.count({ where: { campaignId } }),
+      this.prisma.campaignContact.count({
+        where: { campaignId, sentAt: { not: null } },
+      }),
+      this.prisma.campaignContact.count({
+        where: { campaignId, respondedAt: { not: null } },
+      }),
+      this.prisma.campaignContact.count({
+        where: { campaignId, purchasedAt: { not: null } },
+      }),
+      this.prisma.campaignContact.count({
+        where: { campaignId, status: CampaignContactStatus.FAILED },
+      }),
+    ]);
 
     await this.prisma.campaign.update({
       where: { id: campaignId },
       data: {
-        sentCount: map[CampaignContactStatus.SENT] ?? 0,
-        respondedCount: map[CampaignContactStatus.RESPONDED] ?? 0,
-        purchasedCount: map[CampaignContactStatus.PURCHASED] ?? 0,
-        failedCount: map[CampaignContactStatus.FAILED] ?? 0,
-        ignoredCount: map[CampaignContactStatus.IGNORED] ?? 0,
+        totalContacts: total,
+        sentCount: sent,
+        respondedCount: responded,
+        purchasedCount: purchased,
+        failedCount: failed,
       },
     });
   }
