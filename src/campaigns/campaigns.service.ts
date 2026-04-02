@@ -283,16 +283,17 @@ export class CampaignsService {
       where: { companyId, contact: phone },
       select: { id: true },
     });
-    if (!customer) return;
+    if (!customer) return { marked: false };
 
     const cc = await this.prisma.campaignContact.findFirst({
       where: {
         customerId: customer.id,
         status: CampaignContactStatus.SENT,
+        campaign: { companyId, status: CampaignStatus.RUNNING },
       },
       orderBy: { sentAt: 'desc' },
     });
-    if (!cc) return;
+    if (!cc) return { marked: false };
 
     const updated = await this.prisma.campaignContact.update({
       where: { id: cc.id },
@@ -304,6 +305,7 @@ export class CampaignsService {
     });
 
     await this.updateCounts(updated.campaignId);
+    return { marked: true };
   }
 
   // ─── Evento de venta — marca PURCHASED automáticamente ───────────────────
