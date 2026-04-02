@@ -422,4 +422,27 @@ export class CampaignsService {
       },
     });
   }
+  async markSentManual(campaignContactId: number, companyId: number) {
+    const cc = await this.prisma.campaignContact.findFirst({
+      where: {
+        id: campaignContactId,
+        campaign: { companyId },
+        status: {
+          in: [CampaignContactStatus.PENDING, CampaignContactStatus.FAILED],
+        },
+      },
+      select: { id: true, campaignId: true },
+    });
+
+    if (!cc) throw new NotFoundException('Contacto no encontrado.');
+
+    const updated = await this.prisma.campaignContact.update({
+      where: { id: cc.id },
+      data: { status: CampaignContactStatus.SENT, sentAt: new Date() },
+      select: { campaignId: true },
+    });
+
+    await this.updateCounts(updated.campaignId);
+    return { ok: true };
+  }
 }

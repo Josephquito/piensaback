@@ -108,4 +108,14 @@ export class CampaignsController {
   ) {
     return this.campaignsService.sendContacts(id, dto, req.companyId!);
   }
+
+  @Patch(':id/contacts/:contactId/mark-sent')
+  @RequirePermissions('CUSTOMERS:UPDATE')
+  markSentManual(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('contactId', ParseIntPipe) contactId: number,
+    @Req() req: RequestWithUser,
+  ) {
+    return this.campaignsService.markSentManual(contactId, req.companyId!);
+  }
 }
