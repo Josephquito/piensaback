@@ -26,9 +26,13 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { StreamingLabelsModule } from './streaming-labels/streaming-labels.module';
 import { StreamingImportModule } from './streaming-import/streaming-import.module';
 import { GoogleModule } from './google/google-auth.module';
+import { BotModule } from './bot/bot.module';
+import { EventEmitterModule } from '@nestjs/event-emitter';
+import { CampaignsModule } from './campaigns/campaigns.module';
 
 @Module({
   imports: [
+    EventEmitterModule.forRoot(),
     ScheduleModule.forRoot(),
     PrismaModule,
     AuthModule,
@@ -48,6 +52,8 @@ import { GoogleModule } from './google/google-auth.module';
 
     StreamingImportModule,
     GoogleModule,
+    BotModule,
+    CampaignsModule,
   ],
   controllers: [AppController],
   providers: [

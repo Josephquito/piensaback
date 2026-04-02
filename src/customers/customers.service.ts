@@ -8,6 +8,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import type { CurrentUserJwt } from '../common/types/current-user-jwt.type';
 import { CreateCustomerDto } from './dto/create-customer.dto';
 import { UpdateCustomerDto } from './dto/update-customer.dto';
+import { FromBotCustomerDto } from './dto/from-bot-customer.dto';
 import {
   CustomerQueryDto,
   CustomerSortBy,
@@ -447,5 +448,48 @@ export class CustomersService {
 
     const nextNumber = max + 1;
     return { nextNumber, suggestedName: `Cliente ${nextNumber}` };
+  }
+
+  async createFromBot(dto: FromBotCustomerDto) {
+    const companyId = parseInt(process.env.BOT_COMPANY_ID || '1');
+
+    // Verificar si ya existe por contacto
+    const existing = await this.prisma.customer.findFirst({
+      where: { companyId, contact: dto.contact.replace(/\s+/g, '') },
+    });
+
+    if (existing) {
+      console.log(`👤 Contacto ya existe: [${dto.contact}] ${existing.name}`);
+      return { ok: true, created: false, id: existing.id };
+    }
+
+    // Obtener siguiente número
+    const { suggestedName } = await this.getNextCustomerNumber(companyId);
+
+    try {
+      const customer = await this.prisma.customer.create({
+        data: {
+          companyId,
+          name: suggestedName, // ← "Cliente 5977"
+          contact: dto.contact.replace(/\s+/g, ''),
+          source: 'OTHER',
+          sourceNote: 'BOT',
+          notes: dto.name ?? null,
+        },
+        select: { ...CUSTOMER_SELECT, id: true },
+      });
+
+      this.syncCreateToGoogle(customer, companyId).catch(() => null);
+
+      console.log(
+        `👤 Nuevo cliente desde bot: ${suggestedName} [${dto.contact}]`,
+      );
+      return { ok: true, created: true, id: customer.id };
+    } catch (e: any) {
+      if (e?.code === 'P2002') {
+        return { ok: true, created: false };
+      }
+      throw e;
+    }
   }
 }

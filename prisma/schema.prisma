@@ -61,6 +61,21 @@ enum CustomerSource {
   OTHER
 }
 
+enum CampaignStatus {
+  DRAFT
+  RUNNING
+  COMPLETED
+}
+
+enum CampaignContactStatus {
+  PENDING
+  SENT
+  RESPONDED
+  PURCHASED
+  FAILED
+  IGNORED
+}
+
 enum StreamingAccountStatus {
   ACTIVE
   EXPIRED
@@ -162,6 +177,8 @@ model Company {
   users      CompanyUser[]
   suppliers  Supplier[]
   customers  Customer[]
+  campaigns Campaign[]
+
 
   streamingAccounts  StreamingAccount[]
   streamingSales     StreamingSale[]
@@ -264,6 +281,8 @@ model Customer {
 
   company Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
   sales   StreamingSale[]
+  campaignContacts CampaignContact[]
+
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt      @map("updated_at")
@@ -496,4 +515,59 @@ model ProfileLabel {
   @@index([companyId])
   @@index([platformId])
   @@map("profile_labels")
+}
+
+model Campaign {
+  id        Int            @id @default(autoincrement())
+  companyId Int            @map("company_id")
+  name      String
+  message   String
+  imageUrl  String?        @map("image_url")
+  status    CampaignStatus @default(DRAFT)
+  segment   String?        // ALL | HOT | WARM | COLD | PROSPECT
+
+  totalContacts  Int @default(0) @map("total_contacts")
+  sentCount      Int @default(0) @map("sent_count")
+  respondedCount Int @default(0) @map("responded_count")
+  purchasedCount Int @default(0) @map("purchased_count")
+  failedCount    Int @default(0) @map("failed_count")
+  ignoredCount   Int @default(0) @map("ignored_count")
+
+  company  Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  contacts CampaignContact[]
+
+  startedAt   DateTime? @map("started_at")
+  completedAt DateTime? @map("completed_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt      @map("updated_at")
+
+  @@index([companyId])
+  @@index([status])
+  @@map("campaigns")
+}
+
+model CampaignContact {
+  id         Int                   @id @default(autoincrement())
+  campaignId Int                   @map("campaign_id")
+  customerId Int                   @map("customer_id")
+
+  status           CampaignContactStatus @default(PENDING)
+  sentAt           DateTime?             @map("sent_at")
+  respondedAt      DateTime?             @map("responded_at")
+  purchasedAt      DateTime?             @map("purchased_at")
+  platformPurchased String?              @map("platform_purchased")
+  failReason       String?               @map("fail_reason")
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt      @map("updated_at")
+
+  @@unique([campaignId, customerId])
+  @@index([campaignId])
+  @@index([customerId])
+  @@index([status])
+  @@map("campaign_contacts")
 }

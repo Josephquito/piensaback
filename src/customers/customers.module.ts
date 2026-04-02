@@ -3,6 +3,7 @@ import { MulterModule } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
 
 import { CustomersController } from './customers.controller';
+import { CustomersBotController } from './customers-bot.controller';
 import { CustomersService } from './customers.service';
 import { PrismaModule } from '../../prisma/prisma.module';
 import { CustomersImportExportService } from './customers-import-export.service';
@@ -12,10 +13,9 @@ import { GoogleModule } from '../google/google-auth.module';
   imports: [
     PrismaModule,
     GoogleModule,
-    // Multer en memoria — el buffer se procesa en el servicio
     MulterModule.register({ storage: memoryStorage() }),
   ],
-  controllers: [CustomersController],
+  controllers: [CustomersController, CustomersBotController],
   providers: [CustomersService, CustomersImportExportService],
   exports: [CustomersService, CustomersImportExportService],
 })

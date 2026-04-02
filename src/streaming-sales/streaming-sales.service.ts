@@ -15,6 +15,7 @@ import { KardexService } from '../kardex/kardex.service';
 import { CreateStreamingSaleDto } from './dto/create-streaming-sale.dto';
 import { UpdateStreamingSaleDto } from './dto/update-streaming-sale.dto';
 import { RenewStreamingSaleDto } from './dto/renew-streaming-sale.dto';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 
 export const SALE_SELECT = {
   id: true,
@@ -44,6 +45,7 @@ export class StreamingSalesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly kardex: KardexService,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   // =========================
@@ -226,6 +228,13 @@ export class StreamingSalesService {
       await tx.customer.update({
         where: { id: dto.customerId },
         data: { lastPurchaseAt: saleDate },
+      });
+
+      // ← agregar esto
+      this.eventEmitter.emit('sale.created', {
+        customerId: dto.customerId,
+        platformName: sale.platform.name,
+        companyId,
       });
 
       await tx.kardexMovement.updateMany({
@@ -492,6 +501,12 @@ export class StreamingSalesService {
       await tx.customer.update({
         where: { id: customerId },
         data: { lastPurchaseAt: saleDate },
+      });
+
+      this.eventEmitter.emit('sale.created', {
+        customerId,
+        platformName: newSale.platform.name,
+        companyId,
       });
 
       await tx.kardexMovement.updateMany({
