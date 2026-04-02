@@ -445,4 +445,31 @@ export class CampaignsService {
     await this.updateCounts(updated.campaignId);
     return { ok: true };
   }
+  async markPendingManual(campaignContactId: number, companyId: number) {
+    const cc = await this.prisma.campaignContact.findFirst({
+      where: {
+        id: campaignContactId,
+        campaign: { companyId },
+        status: CampaignContactStatus.SENT,
+      },
+      select: { id: true, campaignId: true },
+    });
+
+    if (!cc)
+      throw new NotFoundException(
+        'Contacto no encontrado o no está en estado SENT.',
+      );
+
+    const updated = await this.prisma.campaignContact.update({
+      where: { id: cc.id },
+      data: {
+        status: CampaignContactStatus.PENDING,
+        sentAt: null,
+      },
+      select: { campaignId: true },
+    });
+
+    await this.updateCounts(updated.campaignId);
+    return { ok: true };
+  }
 }

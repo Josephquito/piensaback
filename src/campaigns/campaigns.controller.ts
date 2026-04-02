@@ -118,4 +118,14 @@ export class CampaignsController {
   ) {
     return this.campaignsService.markSentManual(contactId, req.companyId!);
   }
+
+  @Patch(':id/contacts/:contactId/mark-pending')
+  @RequirePermissions('CUSTOMERS:UPDATE')
+  markPendingManual(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('contactId', ParseIntPipe) contactId: number,
+    @Req() req: RequestWithUser,
+  ) {
+    return this.campaignsService.markPendingManual(contactId, req.companyId!);
+  }
 }
