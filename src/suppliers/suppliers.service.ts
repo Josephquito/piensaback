@@ -98,15 +98,12 @@ export class SuppliersService {
         data: {
           companyId,
           name: dto.name,
-          contact: dto.contact,
+          contact: dto.contact?.replace(/\s+/g, '') ?? dto.contact, // ← normalizar
           notes: dto.notes,
         },
         select: { ...SUPPLIER_SELECT, id: true },
       });
-
-      // Sync → Google
       this.syncCreateToGoogle(supplier, companyId).catch(() => null);
-
       return supplier;
     } catch (e: any) {
       if (e?.code === 'P2002') {
@@ -131,25 +128,22 @@ export class SuppliersService {
       dto.name !== undefined ||
       dto.contact !== undefined ||
       dto.notes !== undefined;
-
-    if (!hasChanges) {
+    if (!hasChanges)
       throw new BadRequestException('No hay campos para actualizar.');
-    }
 
     try {
       const supplier = await this.prisma.supplier.update({
         where: { id },
         data: {
           ...(dto.name !== undefined ? { name: dto.name } : {}),
-          ...(dto.contact !== undefined ? { contact: dto.contact } : {}),
+          ...(dto.contact !== undefined
+            ? { contact: dto.contact.replace(/\s+/g, '') }
+            : {}), // ← normalizar
           ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
         },
         select: { ...SUPPLIER_SELECT, id: true, googleContactId: true },
       });
-
-      // Sync → Google
       this.syncUpdateToGoogle(supplier, companyId).catch(() => null);
-
       return supplier;
     } catch (e: any) {
       if (e?.code === 'P2002') {
