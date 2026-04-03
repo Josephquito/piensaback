@@ -299,4 +299,16 @@ export class SuppliersService {
       orderBy: { purchaseDate: 'desc' },
     });
   }
+
+  async getAllContacts(companyId: number) {
+    const suppliers = await this.prisma.supplier.findMany({
+      where: { companyId },
+      select: { contact: true },
+    });
+    return {
+      contacts: suppliers
+        .map((s) => s.contact?.replace(/\s+/g, ''))
+        .filter(Boolean),
+    };
+  }
 }

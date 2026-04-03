@@ -454,14 +454,26 @@ export class CustomersService {
 
   async createFromBot(dto: FromBotCustomerDto) {
     const companyId = parseInt(process.env.BOT_COMPANY_ID || '1');
+    const phone = dto.contact.replace(/\s+/g, '');
+
+    // Verificar si es proveedor
+    const isSupplier = await this.prisma.supplier.findFirst({
+      where: { companyId, contact: { contains: phone } },
+      select: { id: true },
+    });
+
+    if (isSupplier) {
+      console.log(`🚫 Proveedor ignorado en from-bot: [${phone}]`);
+      return { ok: false, reason: 'supplier' };
+    }
 
     // Verificar si ya existe por contacto
     const existing = await this.prisma.customer.findFirst({
-      where: { companyId, contact: dto.contact.replace(/\s+/g, '') },
+      where: { companyId, contact: phone },
     });
 
     if (existing) {
-      console.log(`👤 Contacto ya existe: [${dto.contact}] ${existing.name}`);
+      console.log(`👤 Contacto ya existe: [${phone}] ${existing.name}`);
       return { ok: true, created: false, id: existing.id };
     }
 
@@ -472,8 +484,8 @@ export class CustomersService {
       const customer = await this.prisma.customer.create({
         data: {
           companyId,
-          name: suggestedName, // ← "Cliente 5977"
-          contact: dto.contact.replace(/\s+/g, ''),
+          name: suggestedName,
+          contact: phone,
           source: 'OTHER',
           sourceNote: 'BOT',
           notes: dto.name ?? null,
@@ -483,9 +495,7 @@ export class CustomersService {
 
       this.syncCreateToGoogle(customer, companyId).catch(() => null);
 
-      console.log(
-        `👤 Nuevo cliente desde bot: ${suggestedName} [${dto.contact}]`,
-      );
+      console.log(`👤 Nuevo cliente desde bot: ${suggestedName} [${phone}]`);
       return { ok: true, created: true, id: customer.id };
     } catch (e: any) {
       if (e?.code === 'P2002') {
