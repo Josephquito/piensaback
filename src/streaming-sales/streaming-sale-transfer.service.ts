@@ -134,8 +134,8 @@ export class StreamingSaleTransferService {
           },
         });
 
-        // d) Kardex: devolver días al stock desde cuenta origen
         if (daysLeft > 0) {
+          // d) Kardex: devolver días al stock desde cuenta origen
           await this.kardex.registerIn(
             {
               companyId,
@@ -156,6 +156,7 @@ export class StreamingSaleTransferService {
               qty: daysLeft,
               refType: KardexRefType.PROFILE_TRANSFER,
               accountId: targetAccount.id,
+              allowNegative: true, // ← misma plataforma, el IN ya compensó
             },
             tx,
           );

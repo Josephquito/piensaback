@@ -98,10 +98,19 @@ export class KardexService {
       refType: KardexRefType;
       accountId?: number;
       saleId?: number;
+      allowNegative?: boolean;
     },
     tx?: TxClient,
   ) {
-    const { companyId, platformId, qty, refType, accountId, saleId } = params;
+    const {
+      companyId,
+      platformId,
+      qty,
+      refType,
+      accountId,
+      saleId,
+      allowNegative = false,
+    } = params;
     const client = tx ?? this.prisma;
 
     if (!Number.isInteger(qty) || qty <= 0)
@@ -112,8 +121,11 @@ export class KardexService {
     });
     if (!item) throw new BadRequestException('CostItem no existe.');
 
-    // Solo permite stock negativo en ventas — es el modelo de negocio intencional
-    if (refType !== KardexRefType.PROFILE_SALE && item.stock < qty)
+    if (
+      !allowNegative &&
+      refType !== KardexRefType.PROFILE_SALE &&
+      item.stock < qty
+    )
       throw new BadRequestException('Stock insuficiente para la salida.');
 
     const unitCost = item.avgCost;
