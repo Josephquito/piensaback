@@ -52,7 +52,6 @@ export class StreamingSalePauseService {
     if (sale.status !== SaleStatus.PAUSED)
       throw new BadRequestException('Solo se pueden reanudar ventas pausadas.');
 
-    // ← verificar estado de la cuenta
     const account = await this.prisma.streamingAccount.findUnique({
       where: { id: sale.accountId },
       select: { status: true },
@@ -63,7 +62,7 @@ export class StreamingSalePauseService {
         'No se puede reanudar una venta de una cuenta inactiva o vencida.',
       );
 
-    if (!sale.pausedDaysLeft || sale.pausedDaysLeft <= 0)
+    if (sale.pausedDaysLeft === null || sale.pausedDaysLeft === undefined)
       throw new BadRequestException('No hay días restantes para reanudar.');
 
     const newCutoffDate = new Date(today);

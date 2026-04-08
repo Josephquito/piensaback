@@ -299,13 +299,13 @@ export class StreamingAccountProfilesService {
       });
 
       for (const sale of pausedSales) {
-        // Dato corrupto (no debería pasar) — skip
-        if (sale.pausedDaysLeft === null || sale.pausedDaysLeft === undefined) {
-          continue;
+        if (!sale.pausedDaysLeft || sale.pausedDaysLeft <= 0) {
+          throw new BadRequestException(
+            `La venta ${sale.id} no tiene días restantes para reanudar.`,
+          );
         }
 
         // nueva cutoffDate = hoy + pausedDaysLeft
-        // Si pausedDaysLeft === 0, vence hoy → PENDING
         const newCutoffDate = new Date(today);
         newCutoffDate.setUTCDate(today.getUTCDate() + sale.pausedDaysLeft);
 

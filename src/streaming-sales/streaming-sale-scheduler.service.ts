@@ -9,7 +9,7 @@ export class StreamingSaleSchedulerService {
 
   constructor(private readonly prisma: PrismaService) {}
 
-  @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT)
+  @Cron('0 5 * * *') // 05:00 UTC = 00:00 Ecuador (UTC-5)
   async runDailyTasks() {
     await this.markExpiredSales();
     await this.releaseOrphanProfiles();
