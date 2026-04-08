@@ -76,6 +76,21 @@ enum CampaignContactStatus {
   IGNORED
 }
 
+enum SupplierMovementType {
+  PURCHASE
+  TRANSFER
+  ADJUSTMENT
+}
+
+enum PaymentMode {
+  CASH
+  CREDIT
+  BALANCE
+  CASH_BALANCE
+  CASH_CREDIT
+  BALANCE_CREDIT
+}
+
 enum StreamingAccountStatus {
   ACTIVE
   EXPIRED
@@ -193,6 +208,8 @@ model Company {
   @@index([ownerUserId])
   @@index([status])
   @@map("companies")
+  supplierMovements SupplierMovement[]
+  accountRenewals AccountRenewal[]
 }
 model CompanyUser {
   id        Int               @id @default(autoincrement())
@@ -257,6 +274,7 @@ model Supplier {
 
   company  Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
   accounts StreamingAccount[]
+  movements SupplierMovement[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt      @map("updated_at")
@@ -264,6 +282,33 @@ model Supplier {
   @@index([companyId])
   @@unique([companyId, name])
   @@map("suppliers")
+}
+
+model SupplierMovement {
+  id          Int                  @id @default(autoincrement())
+  companyId   Int                  @map("company_id")
+  supplierId  Int                  @map("supplier_id")
+
+  type          SupplierMovementType
+  amount        Decimal   @db.Decimal(12, 4)
+  balanceBefore Decimal   @db.Decimal(12, 4) @map("balance_before")
+  balanceAfter  Decimal   @db.Decimal(12, 4) @map("balance_after")
+
+  accountId   Int?      @map("account_id")
+  note        String?
+  date        DateTime
+
+  company  Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  supplier Supplier         @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  account  StreamingAccount? @relation(fields: [accountId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt      @map("updated_at")
+
+  @@index([companyId])
+  @@index([supplierId])
+  @@index([accountId])
+  @@map("supplier_movements")
 }
 
 model Customer {
@@ -326,26 +371,32 @@ model StreamingAccount {
   email         String
   password      String
   profilesTotal Int    @map("profiles_total")
-  durationDays  Int    @map("duration_days")    // ← nuevo: días reales de la cuenta
+  durationDays  Int    @map("duration_days")
 
   purchaseDate DateTime @map("purchase_date")
   cutoffDate   DateTime @map("cutoff_date")
 
-  totalCost Decimal @db.Decimal(12, 4) @map("total_cost")
+  totalCost     Decimal  @db.Decimal(12, 4) @map("total_cost")
+  paymentMode   PaymentMode @default(CASH) @map("payment_mode")
+  cashAmount    Decimal? @db.Decimal(12, 4) @map("cash_amount")
+  creditAmount  Decimal? @db.Decimal(12, 4) @map("credit_amount")
+  balanceAmount Decimal? @db.Decimal(12, 4) @map("balance_amount")
+
   notes     String?
   status    StreamingAccountStatus @default(ACTIVE)
 
-  replacedByEmail    String?   @map("replaced_by_email")    // email de la cuenta B
-  replacedAt         DateTime? @map("replaced_at")          // fecha del reemplazo
-  replacementNote    String?   @map("replacement_note")     // nota opcional
+  replacedByEmail    String?   @map("replaced_by_email")
+  replacedAt         DateTime? @map("replaced_at")
+  replacementNote    String?   @map("replacement_note")
 
   company  Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
   platform StreamingPlatform @relation(fields: [platformId], references: [id], onDelete: Restrict)
   supplier Supplier          @relation(fields: [supplierId], references: [id], onDelete: Restrict)
 
-  profiles       AccountProfile[]
-  kardexMoves    KardexMovement[]
-  streamingSales StreamingSale[]
+  profiles          AccountProfile[]
+  kardexMoves       KardexMovement[]
+  streamingSales    StreamingSale[]
+  supplierMovements SupplierMovement[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt      @map("updated_at")
@@ -358,6 +409,7 @@ model StreamingAccount {
   @@index([companyId, status])
 
   @@map("streaming_accounts")
+  accountRenewals AccountRenewal[]
 }
 
 model AccountProfile {
@@ -381,6 +433,30 @@ model AccountProfile {
   @@index([labelId])
   @@index([accountId, status])
   @@map("account_profiles")
+}
+
+model AccountRenewal {
+  id          Int      @id @default(autoincrement())
+  companyId   Int      @map("company_id")
+  accountId   Int      @map("account_id")
+
+  purchaseDate  DateTime @map("purchase_date")
+  cutoffDate    DateTime @map("cutoff_date")
+  durationDays  Int      @map("duration_days")
+  totalCost     Decimal  @db.Decimal(12, 4) @map("total_cost")
+  paymentMode   PaymentMode @map("payment_mode")
+  cashAmount    Decimal? @db.Decimal(12, 4) @map("cash_amount")
+  creditAmount  Decimal? @db.Decimal(12, 4) @map("credit_amount")
+  balanceAmount Decimal? @db.Decimal(12, 4) @map("balance_amount")
+
+  company  Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  account  StreamingAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([companyId])
+  @@index([accountId])
+  @@map("account_renewals")
 }
 
 model StreamingSale {

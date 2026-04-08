@@ -1,4 +1,13 @@
-import { IsInt, IsOptional, IsString, Min, MinLength } from 'class-validator';
+import {
+  IsEnum,
+  IsInt,
+  IsOptional,
+  IsString,
+  Min,
+  MinLength,
+  ValidateIf,
+} from 'class-validator';
+import { PaymentMode } from '@prisma/client';
 
 export class CreateStreamingAccountDto {
   @IsInt()
@@ -21,18 +30,33 @@ export class CreateStreamingAccountDto {
 
   @IsInt()
   @Min(1)
-  durationDays: number; // ← nuevo: días reales de la cuenta
+  durationDays: number;
 
   @IsString()
-  purchaseDate: string; // ISO string
+  purchaseDate: string;
 
   @IsString()
-  cutoffDate: string; // ISO string
+  cutoffDate: string;
 
   @IsString()
-  totalCost: string; // decimal como string
+  totalCost: string;
 
   @IsOptional()
   @IsString()
   notes?: string;
+
+  @IsEnum(PaymentMode)
+  paymentMode: PaymentMode;
+
+  @IsOptional()
+  @IsString()
+  cashAmount?: string;
+
+  @IsOptional()
+  @IsString()
+  creditAmount?: string;
+
+  @IsOptional()
+  @IsString()
+  balanceAmount?: string;
 }

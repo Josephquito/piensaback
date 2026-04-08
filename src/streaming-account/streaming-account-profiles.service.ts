@@ -8,7 +8,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { KardexService } from '../kardex/kardex.service';
 import { StreamingAccountsService } from './streaming-accounts.service';
 import { RenewalMessageStatus, SaleStatus } from '@prisma/client';
-import { daysRemainingFrom } from '../common/utils/date.utils';
+import { daysRemainingFrom, isExpiredFrom } from '../common/utils/date.utils';
 
 @Injectable()
 export class StreamingAccountProfilesService {
@@ -30,10 +30,7 @@ export class StreamingAccountProfilesService {
       );
 
     const newTotal = account.profilesTotal + 1;
-    const daysLeft = this.accounts.daysRemainingByDate(
-      account.cutoffDate,
-      today,
-    );
+    const daysLeft = daysRemainingFrom(account.cutoffDate, today);
 
     await this.prisma.$transaction(async (tx) => {
       await tx.accountProfile.create({
@@ -89,10 +86,7 @@ export class StreamingAccountProfilesService {
         'No se puede reducir: todos los perfiles están vendidos.',
       );
 
-    const daysLeft = this.accounts.daysRemainingByDate(
-      account.cutoffDate,
-      today,
-    );
+    const daysLeft = daysRemainingFrom(account.cutoffDate, today);
 
     await this.prisma.$transaction(async (tx) => {
       const toDelete = await tx.accountProfile.findFirst({
@@ -143,10 +137,7 @@ export class StreamingAccountProfilesService {
     if (account.status === StreamingAccountStatus.INACTIVE)
       throw new BadRequestException('La cuenta ya está inactiva.');
 
-    const daysLeft = this.accounts.daysRemainingByDate(
-      account.cutoffDate,
-      today,
-    );
+    const daysLeft = daysRemainingFrom(account.cutoffDate, today);
 
     await this.prisma.$transaction(async (tx) => {
       // 1) Bloquear perfiles disponibles
@@ -239,15 +230,12 @@ export class StreamingAccountProfilesService {
     if (account.status !== StreamingAccountStatus.INACTIVE)
       throw new BadRequestException('La cuenta no está inactiva.');
 
-    if (this.accounts.isExpired(account.cutoffDate, today))
+    if (isExpiredFrom(account.cutoffDate, today))
       throw new BadRequestException(
         'No se puede reactivar: la cuenta está vencida. Renuévala primero.',
       );
 
-    const daysLeft = this.accounts.daysRemainingByDate(
-      account.cutoffDate,
-      today,
-    );
+    const daysLeft = daysRemainingFrom(account.cutoffDate, today);
 
     const dailyCost = this.accounts.calcDailyCost(
       account.totalCost,

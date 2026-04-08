@@ -1,5 +1,12 @@
-// dto/replace-paid.dto.ts
-import { IsInt, IsOptional, IsString, Min, MinLength } from 'class-validator';
+import {
+  IsEnum,
+  IsInt,
+  IsOptional,
+  IsString,
+  Min,
+  MinLength,
+} from 'class-validator';
+import { PaymentMode } from '@prisma/client';
 
 export class ReplacePaidDto {
   @IsString()
@@ -20,6 +27,24 @@ export class ReplacePaidDto {
   @IsString()
   @MinLength(1)
   totalCost: string;
+
+  @IsInt()
+  supplierId: number;
+
+  @IsEnum(PaymentMode)
+  paymentMode: PaymentMode;
+
+  @IsOptional()
+  @IsString()
+  cashAmount?: string;
+
+  @IsOptional()
+  @IsString()
+  creditAmount?: string;
+
+  @IsOptional()
+  @IsString()
+  balanceAmount?: string;
 
   @IsOptional()
   @IsString()

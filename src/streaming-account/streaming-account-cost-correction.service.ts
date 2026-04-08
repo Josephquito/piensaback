@@ -1,11 +1,12 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
-import { KardexRefType } from '@prisma/client';
+import { KardexRefType, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { KardexService } from '../kardex/kardex.service';
 import {
   StreamingAccountsService,
   ACCOUNT_SELECT,
 } from './streaming-accounts.service';
+import { StreamingAccountUpdateService } from './streaming-account-update.service';
 import { CorrectCostDto } from './dto/correct-cost.dto';
 
 @Injectable()
@@ -14,13 +15,14 @@ export class StreamingAccountCostCorrectionService {
     private readonly prisma: PrismaService,
     private readonly kardex: KardexService,
     private readonly accounts: StreamingAccountsService,
+    private readonly updateService: StreamingAccountUpdateService,
   ) {}
 
   async correctCost(id: number, dto: CorrectCostDto, companyId: number) {
     const account = await this.accounts.findAndAssert(id, companyId);
 
     const newTotalCost = this.accounts.parseDecimal(dto.totalCost, 'totalCost');
-    const oldTotalCost = account.totalCost;
+    const oldTotalCost = new Prisma.Decimal(account.totalCost);
 
     if (newTotalCost.equals(oldTotalCost))
       throw new BadRequestException('El costo nuevo es igual al actual.');
@@ -37,27 +39,45 @@ export class StreamingAccountCostCorrectionService {
       account.durationDays,
     );
 
-    // Si dailyCost no cambia (caso raro pero posible por redondeo decimal)
-    // igual se actualiza el totalCost y el balance del proveedor
     const dailyCostChanged = !newDailyCost.equals(oldDailyCost);
 
-    const costDelta = newTotalCost.sub(oldTotalCost);
+    // Resolver nuevos montos parciales con la modalidad actual y el nuevo totalCost
+    const newAmounts = this.accounts['resolvePaymentAmounts'](
+      account.paymentMode,
+      newTotalCost,
+      {
+        cashAmount: account.cashAmount?.toString(),
+        creditAmount: account.creditAmount?.toString(),
+        balanceAmount: account.balanceAmount?.toString(),
+      },
+    );
 
-    // Traer ventas fuera de la tx para no alargarla innecesariamente
+    // Delta viejo que estaba aplicado en el proveedor
+    const oldDelta = this.updateService['resolveExistingDelta'](
+      account.paymentMode,
+      oldTotalCost,
+      account.cashAmount ? new Prisma.Decimal(account.cashAmount) : null,
+      account.creditAmount ? new Prisma.Decimal(account.creditAmount) : null,
+      account.balanceAmount ? new Prisma.Decimal(account.balanceAmount) : null,
+    );
+
+    // Delta nuevo con el nuevo totalCost
+    const newDelta = newAmounts.balanceDelta;
+
+    // Diferencia neta a aplicar al balance
+    const balanceAdjustment = newDelta.sub(oldDelta);
+
     const sales = await this.prisma.streamingSale.findMany({
       where: {
         accountId: account.id,
         companyId,
-        status: { in: ['ACTIVE', 'PAUSED'] }, // ← solo ventas vigentes
+        status: { in: ['ACTIVE', 'PAUSED'] },
       },
-      select: {
-        id: true,
-        daysAssigned: true,
-      },
+      select: { id: true, daysAssigned: true },
     });
 
     await this.prisma.$transaction(async (tx) => {
-      // 1) Recalcular costAtSale y dailyCost de todas las ventas de esta cuenta
+      // 1) Recalcular costAtSale y dailyCost de ventas vigentes
       if (dailyCostChanged && sales.length > 0) {
         for (const sale of sales) {
           await tx.streamingSale.update({
@@ -70,9 +90,7 @@ export class StreamingAccountCostCorrectionService {
         }
       }
 
-      // 2) Corrección de costo promedio en kardex sin mover stock
-      // registerCostCorrection actualiza avgCost en CostItem y registra
-      // el movimiento con qty = stock actual y totalCost = delta de valoración
+      // 2) Corrección de costo promedio en kardex
       if (dailyCostChanged) {
         await this.kardex.registerCostCorrection(
           {
@@ -86,18 +104,44 @@ export class StreamingAccountCostCorrectionService {
         );
       }
 
-      // 3) Balance proveedor — ajusta solo la diferencia
-      // costDelta positivo = costo subió = proveedor debe más = decrement
-      // costDelta negativo = costo bajó = proveedor debe menos = increment (decrement negativo)
-      await tx.supplier.update({
-        where: { id: account.supplierId },
-        data: { balance: { decrement: costDelta } },
-      });
+      // 3) Ajuste de balance del proveedor si hay diferencia
+      if (!balanceAdjustment.equals(0)) {
+        const supplier = await tx.supplier.findUnique({
+          where: { id: account.supplierId },
+          select: { balance: true },
+        });
 
-      // 4) Actualizar totalCost en la cuenta
+        const balanceBefore = new Prisma.Decimal(supplier!.balance);
+        const balanceAfter = balanceBefore.add(balanceAdjustment);
+
+        await tx.supplier.update({
+          where: { id: account.supplierId },
+          data: { balance: balanceAfter },
+        });
+
+        await tx.supplierMovement.create({
+          data: {
+            companyId,
+            supplierId: account.supplierId,
+            type: 'ADJUSTMENT',
+            amount: newTotalCost,
+            balanceBefore,
+            balanceAfter,
+            accountId: account.id,
+            date: new Date(),
+          },
+        });
+      }
+
+      // 4) Actualizar cuenta con nuevo costo y nuevos montos parciales
       await tx.streamingAccount.update({
         where: { id: account.id },
-        data: { totalCost: newTotalCost },
+        data: {
+          totalCost: newTotalCost,
+          cashAmount: newAmounts.cashAmount,
+          creditAmount: newAmounts.creditAmount,
+          balanceAmount: newAmounts.balanceAmount,
+        },
       });
     });
 

@@ -17,7 +17,7 @@ import { RequirePermissions } from '../common/decorators/require-permissions.dec
 import { SuppliersService } from './suppliers.service';
 import { CreateSupplierDto } from './dto/create-supplier.dto';
 import { UpdateSupplierDto } from './dto/update-supplier.dto';
-import { AdjustBalanceDto } from './dto/adjust-balance.dto';
+import { SupplierTransferDto } from './dto/create-supplier-transfer.dto';
 import type { RequestWithUser } from '../common/types/request-with-user.type';
 
 @Controller('suppliers')
@@ -59,14 +59,15 @@ export class SuppliersController {
     return this.suppliersService.remove(id, req.companyId!, req.user);
   }
 
-  @Post(':id/balance')
+  // Reemplaza adjustBalance
+  @Post(':id/transfer')
   @RequirePermissions('SUPPLIERS:UPDATE')
-  adjustBalance(
+  registerTransfer(
     @Param('id', ParseIntPipe) id: number,
-    @Body() dto: AdjustBalanceDto,
+    @Body() dto: SupplierTransferDto,
     @Req() req: RequestWithUser,
   ) {
-    return this.suppliersService.adjustBalance(
+    return this.suppliersService.registerTransfer(
       id,
       dto,
       req.companyId!,
@@ -81,5 +82,14 @@ export class SuppliersController {
     @Req() req: RequestWithUser,
   ) {
     return this.suppliersService.accountsBySupplier(id, req.companyId!);
+  }
+
+  @Get(':id/movements')
+  @RequirePermissions('SUPPLIERS:READ')
+  movements(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req: RequestWithUser,
+  ) {
+    return this.suppliersService.getMovements(id, req.companyId!);
   }
 }

@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import {
   KardexRefType,
+  PaymentMode,
   Prisma,
   SaleStatus,
   StreamingAccountStatus,
@@ -13,6 +14,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { KardexService } from '../kardex/kardex.service';
 import { StreamingAccountsService } from './streaming-accounts.service';
 import { UpdateStreamingAccountDto } from './dto/update-streaming-account.dto';
+import { daysRemainingFrom, isExpiredFrom } from '../common/utils/date.utils';
 
 @Injectable()
 export class StreamingAccountUpdateService {
@@ -22,8 +24,37 @@ export class StreamingAccountUpdateService {
     private readonly accounts: StreamingAccountsService,
   ) {}
 
-  async update(id: number, dto: UpdateStreamingAccountDto, companyId: number, today: Date) {
-    // --- Rechazar campos prohibidos ---
+  // ─── Calcula el balanceDelta de una modalidad ya guardada ──────────
+  private resolveExistingDelta(
+    paymentMode: PaymentMode,
+    totalCost: Prisma.Decimal,
+    cashAmount: Prisma.Decimal | null,
+    creditAmount: Prisma.Decimal | null,
+    balanceAmount: Prisma.Decimal | null,
+  ): Prisma.Decimal {
+    const zero = new Prisma.Decimal(0);
+    switch (paymentMode) {
+      case 'CASH':
+        return zero;
+      case 'CREDIT':
+        return totalCost.negated();
+      case 'BALANCE':
+        return totalCost.negated();
+      case 'CASH_BALANCE':
+        return (balanceAmount ?? zero).negated();
+      case 'CASH_CREDIT':
+        return (creditAmount ?? zero).negated();
+      case 'BALANCE_CREDIT':
+        return (balanceAmount ?? zero).negated().sub(creditAmount ?? zero);
+    }
+  }
+
+  async update(
+    id: number,
+    dto: UpdateStreamingAccountDto,
+    companyId: number,
+    today: Date,
+  ) {
     if ('totalCost' in dto)
       throw new BadRequestException(
         'El costo de la cuenta se corrige por el servicio de corrección de costo.',
@@ -35,7 +66,6 @@ export class StreamingAccountUpdateService {
 
     const account = await this.accounts.findAndAssert(id, companyId);
 
-    // --- Validar status ---
     if (dto.status === StreamingAccountStatus.EXPIRED)
       throw new BadRequestException(
         'No se puede cambiar manualmente a Expirada. Cambia la fecha de corte.',
@@ -45,9 +75,15 @@ export class StreamingAccountUpdateService {
         'No se puede cambiar manualmente a Eliminada.',
       );
 
-    // --- Resolver valores efectivos ---
+    // ─── Resolver valores efectivos ────────────────────────────────
     const oldSupplierId = account.supplierId;
     const newSupplierId = dto.supplierId ?? oldSupplierId;
+    const supplierChanged = oldSupplierId !== newSupplierId;
+
+    const oldPaymentMode = account.paymentMode;
+    const newPaymentMode = dto.paymentMode ?? oldPaymentMode;
+    const modalityChanged = newPaymentMode !== oldPaymentMode;
+
     const newDurationDays = dto.durationDays ?? account.durationDays;
     const newProfilesTotal = account.profilesTotal;
 
@@ -73,10 +109,10 @@ export class StreamingAccountUpdateService {
       newDurationDays,
     );
 
-    const oldDaysLeft = this.accounts.daysRemainingByDate(account.cutoffDate, today);
-    const newDaysLeft = this.accounts.daysRemainingByDate(newCutoffDate, today);
+    const oldDaysLeft = daysRemainingFrom(account.cutoffDate, today);
+    const newDaysLeft = daysRemainingFrom(newCutoffDate, today);
 
-    // --- Lecturas previas fuera de la transacción para no alargarla ---
+    // ─── Lecturas previas fuera de tx ──────────────────────────────
     let activeOrPausedSales = 0;
     let availableCount = 0;
 
@@ -98,7 +134,32 @@ export class StreamingAccountUpdateService {
       });
     }
 
-    // --- Construir data de update ---
+    // ─── Resolver nuevos montos si cambia modalidad ────────────────
+    let newAmounts: {
+      cashAmount: Prisma.Decimal;
+      creditAmount: Prisma.Decimal;
+      balanceAmount: Prisma.Decimal;
+      balanceDelta: Prisma.Decimal;
+    } | null = null;
+
+    if (modalityChanged) {
+      newAmounts = this.accounts['resolvePaymentAmounts'](
+        newPaymentMode,
+        account.totalCost,
+        dto,
+      );
+    }
+
+    // ─── Delta viejo (lo que ya estaba aplicado en el proveedor) ──
+    const oldDelta = this.resolveExistingDelta(
+      oldPaymentMode,
+      account.totalCost,
+      account.cashAmount ? new Prisma.Decimal(account.cashAmount) : null,
+      account.creditAmount ? new Prisma.Decimal(account.creditAmount) : null,
+      account.balanceAmount ? new Prisma.Decimal(account.balanceAmount) : null,
+    );
+
+    // ─── Construir data de update ──────────────────────────────────
     const data: Prisma.StreamingAccountUpdateInput = {
       cutoffDate: newCutoffDate,
     };
@@ -111,10 +172,16 @@ export class StreamingAccountUpdateService {
       data.platform = { connect: { id: dto.platformId } };
     if (dto.supplierId !== undefined)
       data.supplier = { connect: { id: dto.supplierId } };
+    if (modalityChanged && newAmounts) {
+      data.paymentMode = newPaymentMode;
+      data.cashAmount = newAmounts.cashAmount;
+      data.creditAmount = newAmounts.creditAmount;
+      data.balanceAmount = newAmounts.balanceAmount;
+    }
 
     await this.prisma.$transaction(
       async (tx) => {
-        // 1) Validar platform y supplier dentro de la tx
+        // 1) Validar platform y supplier
         if (dto.platformId !== undefined) {
           const p = await tx.streamingPlatform.findFirst({
             where: { id: dto.platformId, companyId },
@@ -126,21 +193,99 @@ export class StreamingAccountUpdateService {
         if (dto.supplierId !== undefined) {
           const s = await tx.supplier.findFirst({
             where: { id: dto.supplierId, companyId },
-            select: { id: true },
+            select: { id: true, balance: true },
           });
           if (!s) throw new NotFoundException('Proveedor no accesible.');
         }
 
-        // 2) Balance proveedor si cambia supplierId
-        if (oldSupplierId !== newSupplierId) {
-          await tx.supplier.update({
-            where: { id: oldSupplierId },
-            data: { balance: { increment: account.totalCost } },
-          });
-          await tx.supplier.update({
-            where: { id: newSupplierId },
-            data: { balance: { decrement: account.totalCost } },
-          });
+        // 2) Ajuste de balance por cambio de proveedor y/o modalidad
+        if (supplierChanged || modalityChanged) {
+          const newDelta = newAmounts?.balanceDelta ?? oldDelta;
+
+          if (supplierChanged) {
+            // Revertir en proveedor viejo
+            const oldSupplier = await tx.supplier.findUnique({
+              where: { id: oldSupplierId },
+              select: { balance: true },
+            });
+            const oldBalanceBefore = new Prisma.Decimal(oldSupplier!.balance);
+            const oldBalanceAfter = oldBalanceBefore.sub(oldDelta); // revertir = restar el delta negativo = sumar
+
+            await tx.supplier.update({
+              where: { id: oldSupplierId },
+              data: { balance: oldBalanceAfter },
+            });
+
+            await tx.supplierMovement.create({
+              data: {
+                companyId,
+                supplierId: oldSupplierId,
+                type: 'ADJUSTMENT',
+                amount: account.totalCost,
+                balanceBefore: oldBalanceBefore,
+                balanceAfter: oldBalanceAfter,
+                accountId: account.id,
+                date: new Date(),
+              },
+            });
+
+            // Aplicar en proveedor nuevo
+            const newSupplier = await tx.supplier.findUnique({
+              where: { id: newSupplierId },
+              select: { balance: true },
+            });
+            const newBalanceBefore = new Prisma.Decimal(newSupplier!.balance);
+            const newBalanceAfter = newBalanceBefore.add(newDelta);
+
+            await tx.supplier.update({
+              where: { id: newSupplierId },
+              data: { balance: newBalanceAfter },
+            });
+
+            if (!newDelta.equals(0)) {
+              await tx.supplierMovement.create({
+                data: {
+                  companyId,
+                  supplierId: newSupplierId,
+                  type: 'ADJUSTMENT',
+                  amount: account.totalCost,
+                  balanceBefore: newBalanceBefore,
+                  balanceAfter: newBalanceAfter,
+                  accountId: account.id,
+                  date: new Date(),
+                },
+              });
+            }
+          } else {
+            // Solo cambia modalidad, mismo proveedor
+            const supplier = await tx.supplier.findUnique({
+              where: { id: oldSupplierId },
+              select: { balance: true },
+            });
+            const balanceBefore = new Prisma.Decimal(supplier!.balance);
+            // Revertir delta viejo y aplicar nuevo
+            const balanceAfter = balanceBefore.sub(oldDelta).add(newDelta);
+
+            if (!balanceBefore.equals(balanceAfter)) {
+              await tx.supplier.update({
+                where: { id: oldSupplierId },
+                data: { balance: balanceAfter },
+              });
+
+              await tx.supplierMovement.create({
+                data: {
+                  companyId,
+                  supplierId: oldSupplierId,
+                  type: 'ADJUSTMENT',
+                  amount: account.totalCost,
+                  balanceBefore,
+                  balanceAfter,
+                  accountId: account.id,
+                  date: new Date(),
+                },
+              });
+            }
+          }
         }
 
         // 3) Liberar conflicto de email con cuentas DELETED
@@ -180,7 +325,7 @@ export class StreamingAccountUpdateService {
         }
 
         // 5) Recalcular status según nueva cutoffDate
-        const expired = this.accounts.isExpired(newCutoffDate, today);
+        const expired = isExpiredFrom(newCutoffDate, today);
         const currentStatus =
           (data.status as StreamingAccountStatus) ?? account.status;
 
@@ -206,13 +351,12 @@ export class StreamingAccountUpdateService {
 
         // 6) Recalcular kardex
         if (platformChanged) {
-          // Sacar días disponibles de plataforma anterior
           const qtyToClose = availableCount * oldDaysLeft;
           if (qtyToClose > 0) {
             await this.kardex.registerAdjustOut(
               {
                 companyId,
-                platformId: account.platformId, // ← anterior
+                platformId: account.platformId,
                 qty: qtyToClose,
                 refType: KardexRefType.ACCOUNT_UPDATE,
                 accountId: account.id,
@@ -222,13 +366,12 @@ export class StreamingAccountUpdateService {
             );
           }
 
-          // Entrar a plataforma nueva
           const qtyToEnter = availableCount * newDaysLeft;
           if (qtyToEnter > 0) {
             await this.kardex.registerIn(
               {
                 companyId,
-                platformId: dto.platformId!, // ← nueva
+                platformId: dto.platformId!,
                 qty: qtyToEnter,
                 unitCost: newDailyCost,
                 refType: KardexRefType.ACCOUNT_UPDATE,
@@ -238,7 +381,6 @@ export class StreamingAccountUpdateService {
             );
           }
         } else {
-          // Misma plataforma — ajustar por cambio de días o fecha de compra
           const deltaPerProfile = newDaysLeft - oldDaysLeft;
           if (deltaPerProfile !== 0) {
             const totalDelta = deltaPerProfile * account.profilesTotal;

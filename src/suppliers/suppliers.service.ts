@@ -9,10 +9,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { CurrentUserJwt } from '../common/types/current-user-jwt.type';
 import { CreateSupplierDto } from './dto/create-supplier.dto';
 import { UpdateSupplierDto } from './dto/update-supplier.dto';
-import {
-  AdjustBalanceDto,
-  BalanceMovementType,
-} from './dto/adjust-balance.dto';
+import { SupplierTransferDto } from './dto/create-supplier-transfer.dto';
 import { GoogleAuthService } from '../google/google-auth.service';
 import { GoogleContactsService } from '../google/google-contacts.service';
 
@@ -81,6 +78,11 @@ export class SuppliersService {
       select: {
         ...SUPPLIER_SELECT,
         _count: { select: { accounts: true } },
+        movements: {
+          orderBy: { date: 'desc' },
+          take: 1,
+          select: { date: true, balanceAfter: true },
+        },
       },
     });
     if (!supplier) throw new NotFoundException('Proveedor no encontrado.');
@@ -253,24 +255,45 @@ export class SuppliersService {
 
   // ─── Balance ───────────────────────────────────────────────────────
 
-  async adjustBalance(
+  async registerTransfer(
     id: number,
-    dto: AdjustBalanceDto,
+    dto: SupplierTransferDto,
     companyId: number,
     actor: CurrentUserJwt,
   ) {
     this.assertNotEmployee(actor);
     const supplier = await this.findAndAssert(id, companyId);
 
-    const delta =
-      dto.type === BalanceMovementType.DEPOSIT ? dto.amount : -dto.amount;
+    const balanceBefore = Number(supplier.balance);
+    const balanceAfter = balanceBefore + dto.amount;
 
-    const newBalance = Number(supplier.balance) + delta;
+    return this.prisma.$transaction(async (tx) => {
+      await tx.supplier.update({
+        where: { id },
+        data: { balance: balanceAfter },
+      });
 
-    return this.prisma.supplier.update({
-      where: { id },
-      data: { balance: newBalance },
-      select: { id: true, name: true, balance: true },
+      return tx.supplierMovement.create({
+        data: {
+          companyId,
+          supplierId: id,
+          type: 'TRANSFER',
+          amount: dto.amount,
+          balanceBefore,
+          balanceAfter,
+          note: dto.note,
+          date: new Date(),
+        },
+        select: {
+          id: true,
+          type: true,
+          amount: true,
+          balanceBefore: true,
+          balanceAfter: true,
+          date: true,
+          note: true,
+        },
+      });
     });
   }
 
@@ -304,5 +327,30 @@ export class SuppliersService {
         .map((s) => s.contact?.replace(/\s+/g, ''))
         .filter(Boolean),
     };
+  }
+
+  async getMovements(id: number, companyId: number) {
+    await this.findAndAssert(id, companyId);
+
+    return this.prisma.supplierMovement.findMany({
+      where: { supplierId: id, companyId },
+      orderBy: { date: 'desc' },
+      select: {
+        id: true,
+        type: true,
+        amount: true,
+        balanceBefore: true,
+        balanceAfter: true,
+        date: true,
+        note: true,
+        account: {
+          select: {
+            id: true,
+            email: true,
+            platform: { select: { id: true, name: true } },
+          },
+        },
+      },
+    });
   }
 }

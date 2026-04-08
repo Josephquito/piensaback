@@ -6,7 +6,7 @@ import {
   Min,
   MinLength,
 } from 'class-validator';
-import { StreamingAccountStatus } from '@prisma/client';
+import { PaymentMode, StreamingAccountStatus } from '@prisma/client';
 
 export class UpdateStreamingAccountDto {
   @IsOptional()
@@ -36,10 +36,6 @@ export class UpdateStreamingAccountDto {
   @IsString()
   purchaseDate?: string;
 
-  // cutoffDate eliminado — se deriva desde purchaseDate + durationDays
-  // totalCost eliminado — solo por CostCorrectionService
-  // profilesTotal eliminado — solo por ProfilesService
-
   @IsOptional()
   @IsString()
   notes?: string;
@@ -47,4 +43,20 @@ export class UpdateStreamingAccountDto {
   @IsOptional()
   @IsEnum(StreamingAccountStatus)
   status?: StreamingAccountStatus;
+
+  @IsOptional()
+  @IsEnum(PaymentMode)
+  paymentMode?: PaymentMode;
+
+  @IsOptional()
+  @IsString()
+  cashAmount?: string;
+
+  @IsOptional()
+  @IsString()
+  creditAmount?: string;
+
+  @IsOptional()
+  @IsString()
+  balanceAmount?: string;
 }

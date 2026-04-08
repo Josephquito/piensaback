@@ -8,6 +8,7 @@ import {
   ACCOUNT_SELECT,
 } from '../streaming-account/streaming-accounts.service';
 import { TransferProfileDto } from './dto/transfer-profile.dto';
+import { daysRemainingFrom } from '../common/utils/date.utils';
 
 @Injectable()
 export class StreamingSaleTransferService {
@@ -108,7 +109,7 @@ export class StreamingSaleTransferService {
     const daysLeft =
       sale.status === 'PAUSED' && sale.pausedDaysLeft != null
         ? Number(sale.pausedDaysLeft)
-        : this.accounts.daysRemainingByDate(sale.cutoffDate, today);
+        : daysRemainingFrom(sale.cutoffDate, today);
 
     // ── 5) Transacción ───────────────────────────────────────────────
     await this.prisma.$transaction(

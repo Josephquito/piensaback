@@ -1,5 +1,9 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
-import { KardexRefType } from '@prisma/client';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { KardexRefType, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { KardexService } from '../kardex/kardex.service';
 import {
@@ -9,6 +13,7 @@ import {
 import { ReplaceCredentialsDto } from './dto/replace-credentials.dto';
 import { ReplacePaidDto } from './dto/replace-paid.dto';
 import { ReplaceFromInventoryDto } from './dto/replace-from-inventory.dto';
+import { daysRemainingFrom } from '../common/utils/date.utils';
 
 @Injectable()
 export class StreamingAccountReplacementService {
@@ -80,10 +85,15 @@ export class StreamingAccountReplacementService {
       dto.durationDays,
     );
 
-    const daysLeft = this.accounts.daysRemainingByDate(
-      account.cutoffDate,
-      today,
+    // Resolver montos según modalidad
+    const amounts = this.accounts['resolvePaymentAmounts'](
+      dto.paymentMode,
+      newTotalCost,
+      dto,
     );
+
+    const daysLeft = daysRemainingFrom(account.cutoffDate, today);
+
     const availableCount = await this.prisma.accountProfile.count({
       where: { accountId: account.id, status: 'AVAILABLE' },
     });
@@ -94,13 +104,22 @@ export class StreamingAccountReplacementService {
       select: { cutoffDate: true },
     });
     const soldDaysToTransfer = activeSales.reduce((acc, sale) => {
-      return acc + this.accounts.daysRemainingByDate(sale.cutoffDate, today);
+      return acc + daysRemainingFrom(sale.cutoffDate, today);
     }, 0);
 
     const oldEmail = account.email;
+    const newSupplierId = dto.supplierId;
+    const supplierChanged = newSupplierId !== account.supplierId;
 
     await this.prisma.$transaction(async (tx) => {
-      // 1) ADJUST_OUT — días disponibles que se pierden
+      // 1) Validar nuevo proveedor
+      const supplier = await tx.supplier.findFirst({
+        where: { id: newSupplierId, companyId },
+        select: { id: true, balance: true },
+      });
+      if (!supplier) throw new NotFoundException('Proveedor no accesible.');
+
+      // 2) ADJUST_OUT — días disponibles que se pierden
       if (qtyToClose > 0) {
         await this.kardex.registerAdjustOut(
           {
@@ -115,7 +134,7 @@ export class StreamingAccountReplacementService {
         );
       }
 
-      // 2) IN — todos los perfiles × días de la cuenta nueva
+      // 3) IN — todos los perfiles × días de la cuenta nueva
       await this.kardex.registerIn(
         {
           companyId,
@@ -128,7 +147,7 @@ export class StreamingAccountReplacementService {
         tx,
       );
 
-      // 3) OUT — consume días de ventas activas que se transfieren
+      // 4) OUT — consume días de ventas activas que se transfieren
       if (soldDaysToTransfer > 0) {
         await this.kardex.registerOut(
           {
@@ -142,13 +161,31 @@ export class StreamingAccountReplacementService {
         );
       }
 
-      // 4) Balance proveedor
-      await tx.supplier.update({
-        where: { id: account.supplierId },
-        data: { balance: { decrement: newTotalCost } },
-      });
+      // 5) Balance proveedor nuevo según modalidad
+      if (!amounts.balanceDelta.equals(0)) {
+        const balanceBefore = new Prisma.Decimal(supplier.balance);
+        const balanceAfter = balanceBefore.add(amounts.balanceDelta);
 
-      // 5) Actualizar cuenta
+        await tx.supplier.update({
+          where: { id: newSupplierId },
+          data: { balance: balanceAfter },
+        });
+
+        await tx.supplierMovement.create({
+          data: {
+            companyId,
+            supplierId: newSupplierId,
+            type: 'PURCHASE',
+            amount: newTotalCost,
+            balanceBefore,
+            balanceAfter,
+            accountId: account.id,
+            date: new Date(),
+          },
+        });
+      }
+
+      // 6) Actualizar cuenta
       await tx.streamingAccount.update({
         where: { id: account.id },
         data: {
@@ -158,9 +195,14 @@ export class StreamingAccountReplacementService {
           cutoffDate: newCutoffDate,
           durationDays: dto.durationDays,
           totalCost: newTotalCost,
+          paymentMode: dto.paymentMode,
+          cashAmount: amounts.cashAmount,
+          creditAmount: amounts.creditAmount,
+          balanceAmount: amounts.balanceAmount,
           replacedByEmail: oldEmail,
           replacedAt: new Date(),
           replacementNote: dto.note ?? null,
+          ...(supplierChanged ? { supplierId: newSupplierId } : {}),
         },
       });
     });
@@ -233,14 +275,8 @@ export class StreamingAccountReplacementService {
         `La cuenta B solo tiene ${availableProfilesB.length} perfiles disponibles y se necesitan ${toMigrate.length} para las ventas activas.`,
       );
 
-    const daysLeftA = this.accounts.daysRemainingByDate(
-      accountA.cutoffDate,
-      today,
-    );
-    const daysLeftB = this.accounts.daysRemainingByDate(
-      accountB.cutoffDate,
-      today,
-    );
+    const daysLeftA = daysRemainingFrom(accountA.cutoffDate, today);
+    const daysLeftB = daysRemainingFrom(accountB.cutoffDate, today);
 
     const availableCountA = await this.prisma.accountProfile.count({
       where: { accountId: accountA.id, status: 'AVAILABLE' },

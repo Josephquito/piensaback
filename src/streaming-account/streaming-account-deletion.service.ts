@@ -7,6 +7,7 @@ import {
 import { PrismaService } from '../../prisma/prisma.service';
 import { KardexService } from '../kardex/kardex.service';
 import { StreamingAccountsService } from './streaming-accounts.service';
+import { daysRemainingFrom } from '../common/utils/date.utils';
 
 @Injectable()
 export class StreamingAccountDeletionService {
@@ -38,7 +39,7 @@ export class StreamingAccountDeletionService {
         `No se puede eliminar: hay ${activeSales} perfiles con ventas vigentes.`,
       );
 
-    const daysLeft = this.accounts.daysRemainingByDate(account.cutoffDate, today);
+    const daysLeft = daysRemainingFrom(account.cutoffDate, today);
 
     await this.prisma.$transaction(async (tx) => {
       // 1) Cerrar ventas vencidas que quedaron en ACTIVE o EXPIRED

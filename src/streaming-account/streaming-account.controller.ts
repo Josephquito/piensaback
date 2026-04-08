@@ -247,4 +247,13 @@ export class StreamingAccountsController {
       req.companyId!,
     );
   }
+
+  @Get(':id/renewals')
+  @RequirePermissions('STREAMING_ACCOUNTS:READ')
+  getRenewalHistory(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req: RequestWithUser,
+  ) {
+    return this.renewalService.getRenewalHistory(id, req.companyId!);
+  }
 }

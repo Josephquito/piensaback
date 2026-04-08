@@ -8,10 +8,12 @@ import {
   Prisma,
   StreamingAccountStatus,
   SaleStatus,
+  PaymentMode,
 } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { KardexService } from '../kardex/kardex.service';
 import { CreateStreamingAccountDto } from './dto/create-streaming-account.dto';
+import { daysRemainingFrom, isExpiredFrom } from '../common/utils/date.utils';
 
 export const ACCOUNT_SELECT = {
   id: true,
@@ -22,6 +24,10 @@ export const ACCOUNT_SELECT = {
   purchaseDate: true,
   cutoffDate: true,
   totalCost: true,
+  paymentMode: true,
+  cashAmount: true,
+  creditAmount: true,
+  balanceAmount: true,
   notes: true,
   status: true,
   replacedByEmail: true,
@@ -41,7 +47,7 @@ export const ACCOUNT_SELECT = {
       sales: {
         where: {
           status: { in: ['ACTIVE', 'PAUSED', 'EXPIRED'] as SaleStatus[] },
-        }, // ← agrega EXPIRED
+        },
         select: { cutoffDate: true, status: true },
         orderBy: { createdAt: 'desc' as const },
         take: 1,
@@ -87,52 +93,103 @@ export class StreamingAccountsService {
     return totalCost.div(profilesTotal).div(durationDays);
   }
 
-  isExpired(cutoffDate: Date, today: Date): boolean {
-    const cutoff = new Date(
-      Date.UTC(
-        cutoffDate.getUTCFullYear(),
-        cutoffDate.getUTCMonth(),
-        cutoffDate.getUTCDate(),
-      ),
-    );
-    return today > cutoff;
-  }
+  // ─── Helper de modalidad ───────────────────────────────────────────
+  private resolvePaymentAmounts(
+    paymentMode: PaymentMode,
+    totalCost: Prisma.Decimal,
+    dto: { cashAmount?: string; creditAmount?: string; balanceAmount?: string },
+  ): {
+    cashAmount: Prisma.Decimal;
+    creditAmount: Prisma.Decimal;
+    balanceAmount: Prisma.Decimal;
+    balanceDelta: Prisma.Decimal; // cuánto se mueve el balance del proveedor (negativo)
+  } {
+    const zero = new Prisma.Decimal(0);
 
-  daysRemainingByDate(cutoffDate: Date, today: Date): number {
-    const cutoff = new Date(
-      Date.UTC(
-        cutoffDate.getUTCFullYear(),
-        cutoffDate.getUTCMonth(),
-        cutoffDate.getUTCDate(),
-      ),
-    );
-    return Math.max(
-      0,
-      Math.ceil((cutoff.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)),
-    );
-  }
+    switch (paymentMode) {
+      case 'CASH':
+        return {
+          cashAmount: totalCost,
+          creditAmount: zero,
+          balanceAmount: zero,
+          balanceDelta: zero,
+        };
 
-  async findAndAssert(id: number, companyId: number) {
-    const account = await this.prisma.streamingAccount.findFirst({
-      where: { id, companyId },
-      select: {
-        id: true,
-        companyId: true,
-        platformId: true,
-        supplierId: true,
-        profilesTotal: true,
-        durationDays: true,
-        totalCost: true,
-        status: true,
-        email: true,
-        password: true,
-        purchaseDate: true,
-        cutoffDate: true,
-        notes: true,
-      },
-    });
-    if (!account) throw new NotFoundException('Cuenta no encontrada.');
-    return account;
+      case 'CREDIT':
+        return {
+          cashAmount: zero,
+          creditAmount: totalCost,
+          balanceAmount: zero,
+          balanceDelta: totalCost.negated(),
+        };
+
+      case 'BALANCE':
+        return {
+          cashAmount: zero,
+          creditAmount: zero,
+          balanceAmount: totalCost,
+          balanceDelta: totalCost.negated(),
+        };
+
+      case 'CASH_BALANCE': {
+        const cash = dto.cashAmount ? new Prisma.Decimal(dto.cashAmount) : null;
+        const balance = dto.balanceAmount
+          ? new Prisma.Decimal(dto.balanceAmount)
+          : null;
+        const cashAmt = cash ?? totalCost.sub(balance!);
+        const balAmt = balance ?? totalCost.sub(cash!);
+        if (cashAmt.lessThan(0) || balAmt.lessThan(0))
+          throw new BadRequestException(
+            'Los montos parciales no pueden ser negativos.',
+          );
+        return {
+          cashAmount: cashAmt,
+          creditAmount: zero,
+          balanceAmount: balAmt,
+          balanceDelta: balAmt.negated(),
+        };
+      }
+
+      case 'CASH_CREDIT': {
+        const cash = dto.cashAmount ? new Prisma.Decimal(dto.cashAmount) : null;
+        const credit = dto.creditAmount
+          ? new Prisma.Decimal(dto.creditAmount)
+          : null;
+        const cashAmt = cash ?? totalCost.sub(credit!);
+        const credAmt = credit ?? totalCost.sub(cash!);
+        if (cashAmt.lessThan(0) || credAmt.lessThan(0))
+          throw new BadRequestException(
+            'Los montos parciales no pueden ser negativos.',
+          );
+        return {
+          cashAmount: cashAmt,
+          creditAmount: credAmt,
+          balanceAmount: zero,
+          balanceDelta: credAmt.negated(),
+        };
+      }
+
+      case 'BALANCE_CREDIT': {
+        const balance = dto.balanceAmount
+          ? new Prisma.Decimal(dto.balanceAmount)
+          : null;
+        const credit = dto.creditAmount
+          ? new Prisma.Decimal(dto.creditAmount)
+          : null;
+        const balAmt = balance ?? totalCost.sub(credit!);
+        const credAmt = credit ?? totalCost.sub(balance!);
+        if (balAmt.lessThan(0) || credAmt.lessThan(0))
+          throw new BadRequestException(
+            'Los montos parciales no pueden ser negativos.',
+          );
+        return {
+          cashAmount: zero,
+          creditAmount: credAmt,
+          balanceAmount: balAmt,
+          balanceDelta: balAmt.negated().sub(credAmt),
+        };
+      }
+    }
   }
 
   // =========================
@@ -149,17 +206,15 @@ export class StreamingAccountsService {
       durationDays,
     );
 
-    // Calcular días restantes y status inicial
-    const daysLeft = this.daysRemainingByDate(cutoffDate, today);
-    const isAlreadyExpired = this.isExpired(cutoffDate, today);
-    // daysLeft = 0 + isAlreadyExpired = false → vence hoy → ACTIVE
-    // daysLeft = 0 + isAlreadyExpired = true  → ya venció   → EXPIRED
+    const daysLeft = daysRemainingFrom(cutoffDate, today);
+    const isAlreadyExpired = isExpiredFrom(cutoffDate, today);
     const initialStatus = isAlreadyExpired
       ? StreamingAccountStatus.EXPIRED
       : StreamingAccountStatus.ACTIVE;
 
+    const amounts = this.resolvePaymentAmounts(dto.paymentMode, totalCost, dto);
+
     return this.prisma.$transaction(async (tx) => {
-      // Validaciones dentro de la transacción para evitar race conditions
       const platform = await tx.streamingPlatform.findFirst({
         where: { id: dto.platformId, companyId },
         select: { id: true },
@@ -168,9 +223,12 @@ export class StreamingAccountsService {
 
       const supplier = await tx.supplier.findFirst({
         where: { id: dto.supplierId, companyId },
-        select: { id: true },
+        select: { id: true, balance: true },
       });
       if (!supplier) throw new NotFoundException('Proveedor no accesible.');
+
+      const balanceBefore = new Prisma.Decimal(supplier.balance);
+      const balanceAfter = balanceBefore.add(amounts.balanceDelta);
 
       const deleted = await tx.streamingAccount.findFirst({
         where: {
@@ -197,29 +255,28 @@ export class StreamingAccountsService {
             totalCost,
             notes: dto.notes ?? null,
             status: initialStatus,
+            paymentMode: dto.paymentMode,
+            cashAmount: amounts.cashAmount,
+            creditAmount: amounts.creditAmount,
+            balanceAmount: amounts.balanceAmount,
           },
         });
 
-        // 1) IDs de perfiles existentes
         const oldProfiles = await tx.accountProfile.findMany({
           where: { accountId: deleted.id },
           select: { id: true },
         });
         const oldProfileIds = oldProfiles.map((p) => p.id);
 
-        // 2) Borrar ventas que referencian esos perfiles
         if (oldProfileIds.length > 0) {
           await tx.streamingSale.deleteMany({
             where: { profileId: { in: oldProfileIds } },
           });
         }
 
-        // 3) Borrar perfiles
         await tx.accountProfile.deleteMany({
           where: { accountId: deleted.id },
         });
-
-        // 4) Crear perfiles nuevos
         await tx.accountProfile.createMany({
           data: Array.from({ length: profilesTotal }, (_, i) => ({
             accountId: deleted.id,
@@ -230,7 +287,6 @@ export class StreamingAccountsService {
 
         accountId = deleted.id;
       } else {
-        // Crear cuenta nueva
         let account: { id: number };
         try {
           account = await tx.streamingAccount.create({
@@ -246,7 +302,11 @@ export class StreamingAccountsService {
               cutoffDate,
               totalCost,
               notes: dto.notes ?? null,
-              status: initialStatus, // ← ACTIVE o EXPIRED según días restantes
+              status: initialStatus,
+              paymentMode: dto.paymentMode,
+              cashAmount: amounts.cashAmount,
+              creditAmount: amounts.creditAmount,
+              balanceAmount: amounts.balanceAmount,
             },
             select: { id: true },
           });
@@ -269,21 +329,49 @@ export class StreamingAccountsService {
         accountId = account.id;
       }
 
-      // Común para ambos casos
-      await tx.supplier.update({
-        where: { id: dto.supplierId },
-        data: { balance: { decrement: totalCost } },
+      // Actualizar balance del proveedor
+      if (!amounts.balanceDelta.equals(0)) {
+        await tx.supplier.update({
+          where: { id: dto.supplierId },
+          data: { balance: balanceAfter },
+        });
+
+        await tx.supplierMovement.create({
+          data: {
+            companyId,
+            supplierId: dto.supplierId,
+            type: 'PURCHASE',
+            amount: totalCost,
+            balanceBefore,
+            balanceAfter,
+            accountId,
+            date: new Date(),
+          },
+        });
+      }
+
+      // Registrar compra inicial como primera entrada del historial
+      await tx.accountRenewal.create({
+        data: {
+          companyId,
+          accountId,
+          purchaseDate,
+          cutoffDate,
+          durationDays,
+          totalCost,
+          paymentMode: dto.paymentMode,
+          cashAmount: amounts.cashAmount,
+          creditAmount: amounts.creditAmount,
+          balanceAmount: amounts.balanceAmount,
+        },
       });
 
-      // Solo registrar kardex si hay días reales disponibles
-      // Si vence hoy (daysLeft=0) o ya venció (isAlreadyExpired),
-      // no hay días en inventario que registrar
       if (daysLeft > 0) {
         await this.kardex.registerIn(
           {
             companyId,
             platformId: dto.platformId,
-            qty: profilesTotal * daysLeft, // ← días reales disponibles
+            qty: profilesTotal * daysLeft,
             unitCost: dailyCost,
             refType: KardexRefType.ACCOUNT_PURCHASE,
             accountId,
@@ -297,6 +385,33 @@ export class StreamingAccountsService {
         select: ACCOUNT_SELECT,
       });
     });
+  }
+
+  async findAndAssert(id: number, companyId: number) {
+    const account = await this.prisma.streamingAccount.findFirst({
+      where: { id, companyId },
+      select: {
+        id: true,
+        companyId: true,
+        platformId: true,
+        supplierId: true,
+        profilesTotal: true,
+        durationDays: true,
+        totalCost: true,
+        status: true,
+        email: true,
+        password: true,
+        purchaseDate: true,
+        cutoffDate: true,
+        notes: true,
+        paymentMode: true, // ← agregar
+        cashAmount: true, // ← agregar
+        creditAmount: true, // ← agregar
+        balanceAmount: true, // ← agregar
+      },
+    });
+    if (!account) throw new NotFoundException('Cuenta no encontrada.');
+    return account;
   }
 
   // =========================
