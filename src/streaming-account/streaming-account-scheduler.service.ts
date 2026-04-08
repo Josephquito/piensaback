@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Cron, CronExpression } from '@nestjs/schedule';
+import { Cron } from '@nestjs/schedule';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SaleStatus, StreamingAccountStatus } from '@prisma/client';
 
@@ -9,7 +9,7 @@ export class StreamingAccountSchedulerService {
 
   constructor(private readonly prisma: PrismaService) {}
 
-  @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT)
+  @Cron('0 5 * * *') // 05:00 UTC = 00:00 Ecuador (UTC-5)
   async runDailyTasks() {
     await this.markExpiredAccounts();
     await this.pauseSalesOfExpiredAccounts();
@@ -35,7 +35,6 @@ export class StreamingAccountSchedulerService {
   }
 
   // 2) Ventas ACTIVE en cuentas EXPIRED/INACTIVE → PAUSED
-  // Las ventas de cuentas activas las maneja StreamingSaleSchedulerService
   private async pauseSalesOfExpiredAccounts() {
     const startOfToday = new Date();
     startOfToday.setUTCHours(0, 0, 0, 0);
@@ -71,7 +70,6 @@ export class StreamingAccountSchedulerService {
       );
 
       const salePrice = sale.salePrice.toNumber();
-
       const daysAssigned = sale.daysAssigned ?? 1;
       const creditAmount = (
         (salePrice / daysAssigned) *
@@ -97,7 +95,6 @@ export class StreamingAccountSchedulerService {
   }
 
   // 3) Perfiles AVAILABLE en cuentas EXPIRED/INACTIVE → BLOCKED
-  // No se pueden vender perfiles de cuentas que no están activas
   private async blockAvailableProfilesOfExpiredAccounts() {
     const result = await this.prisma.accountProfile.updateMany({
       where: {
