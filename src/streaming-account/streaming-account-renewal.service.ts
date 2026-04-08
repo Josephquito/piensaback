@@ -1,5 +1,10 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
-import { KardexRefType, StreamingAccountStatus } from '@prisma/client';
+import {
+  KardexRefType,
+  RenewalMessageStatus,
+  SaleStatus,
+  StreamingAccountStatus,
+} from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { KardexService } from '../kardex/kardex.service';
 import {
@@ -20,7 +25,7 @@ export class StreamingAccountRenewalService {
     id: number,
     dto: RenewAccountDto,
     companyId: number,
-    _today: Date,
+    today: Date,
   ) {
     const account = await this.accounts.findAndAssert(id, companyId);
 
@@ -64,12 +69,46 @@ export class StreamingAccountRenewalService {
         },
       });
 
-      // 2) Desbloquear perfiles BLOCKED si la cuenta estaba EXPIRED
+      // 2) Si la cuenta estaba EXPIRED
       if (account.status === StreamingAccountStatus.EXPIRED) {
+        // 2a) Desbloquear perfiles BLOCKED → AVAILABLE
         await tx.accountProfile.updateMany({
           where: { accountId: account.id, status: 'BLOCKED' },
           data: { status: 'AVAILABLE' },
         });
+
+        // 2b) Reanudar ventas PAUSED con su cutoffDate original intacta
+        // No se recalcula nada — en la plataforma la cuenta nunca dejó
+        // de funcionar, solo no estaba registrada en el sistema.
+        const pausedSales = await tx.streamingSale.findMany({
+          where: {
+            companyId,
+            accountId: account.id,
+            status: SaleStatus.PAUSED,
+          },
+          select: { id: true, cutoffDate: true },
+        });
+
+        for (const sale of pausedSales) {
+          const todayStr = today.toISOString().split('T')[0];
+          const cutoffStr = sale.cutoffDate.toISOString().split('T')[0];
+
+          const renewalStatus =
+            todayStr === cutoffStr
+              ? RenewalMessageStatus.PENDING
+              : RenewalMessageStatus.NOT_APPLICABLE;
+
+          await tx.streamingSale.update({
+            where: { id: sale.id },
+            data: {
+              status: SaleStatus.ACTIVE,
+              pausedAt: null,
+              pausedDaysLeft: null,
+              creditAmount: null,
+              renewalStatus,
+            },
+          });
+        }
       }
 
       // 3) Balance proveedor
