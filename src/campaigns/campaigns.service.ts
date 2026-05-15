@@ -4,7 +4,11 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
-import { CampaignContactStatus, CampaignStatus } from '@prisma/client';
+import {
+  CampaignContactStatus,
+  CampaignStatus,
+  CampaignSegment,
+} from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { BotService } from '../bot/bot.service';
 import { CreateCampaignDto } from './dto/create-campaign.dto';
@@ -22,7 +26,7 @@ export class CampaignsService {
   // ─── CRUD Campañas ────────────────────────────────────────────────────────
 
   async findAll(companyId: number) {
-    return this.prisma.campaign.findMany({
+    const campaigns = await this.prisma.campaign.findMany({
       where: { companyId },
       select: {
         id: true,
@@ -31,18 +35,21 @@ export class CampaignsService {
         imageUrl: true,
         status: true,
         segment: true,
-        totalContacts: true,
-        sentCount: true,
-        respondedCount: true,
-        purchasedCount: true,
-        failedCount: true,
-        ignoredCount: true,
         startedAt: true,
         completedAt: true,
         createdAt: true,
       },
       orderBy: { createdAt: 'desc' },
     });
+
+    const withCounts = await Promise.all(
+      campaigns.map(async (c) => ({
+        ...c,
+        ...(await this.getCounts(c.id)),
+      })),
+    );
+
+    return withCounts;
   }
 
   async findOne(id: number, companyId: number) {
@@ -55,19 +62,14 @@ export class CampaignsService {
         imageUrl: true,
         status: true,
         segment: true,
-        totalContacts: true,
-        sentCount: true,
-        respondedCount: true,
-        purchasedCount: true,
-        failedCount: true,
-        ignoredCount: true,
         startedAt: true,
         completedAt: true,
         createdAt: true,
       },
     });
     if (!campaign) throw new NotFoundException('Campaña no encontrada.');
-    return campaign;
+    const counts = await this.getCounts(id);
+    return { ...campaign, ...counts };
   }
 
   async create(dto: CreateCampaignDto, companyId: number) {
@@ -77,7 +79,7 @@ export class CampaignsService {
         name: dto.name,
         message: dto.message,
         imageUrl: dto.imageUrl ?? null,
-        segment: dto.segment ?? 'ALL',
+        segment: dto.segment ?? CampaignSegment.ALL,
       },
     });
   }
@@ -140,7 +142,6 @@ export class CampaignsService {
   async addContacts(id: number, dto: AddContactsDto, companyId: number) {
     await this.findOne(id, companyId);
 
-    // Verificar que los clientes pertenecen a la empresa
     const customers = await this.prisma.customer.findMany({
       where: { id: { in: dto.customerIds }, companyId },
       select: { id: true },
@@ -152,19 +153,9 @@ export class CampaignsService {
 
     const validIds = customers.map((c) => c.id);
 
-    // Ignorar duplicados con createMany skipDuplicates
     await this.prisma.campaignContact.createMany({
       data: validIds.map((customerId) => ({ campaignId: id, customerId })),
       skipDuplicates: true,
-    });
-
-    // Actualizar contador
-    const total = await this.prisma.campaignContact.count({
-      where: { campaignId: id },
-    });
-    await this.prisma.campaign.update({
-      where: { id },
-      data: { totalContacts: total },
     });
 
     return { ok: true, added: validIds.length };
@@ -188,14 +179,6 @@ export class CampaignsService {
     }
 
     await this.prisma.campaignContact.delete({ where: { id: cc.id } });
-
-    const total = await this.prisma.campaignContact.count({
-      where: { campaignId },
-    });
-    await this.prisma.campaign.update({
-      where: { id: campaignId },
-      data: { totalContacts: total },
-    });
 
     return { ok: true };
   }
@@ -258,24 +241,17 @@ export class CampaignsService {
   // ─── Callbacks desde el bot ───────────────────────────────────────────────
 
   async markSent(campaignContactId: number) {
-    const cc = await this.prisma.campaignContact.update({
+    await this.prisma.campaignContact.update({
       where: { id: campaignContactId },
       data: { status: CampaignContactStatus.SENT, sentAt: new Date() },
-      select: { campaignId: true },
     });
-    await this.updateCounts(cc.campaignId);
   }
 
   async markFailed(campaignContactId: number, reason: string) {
-    const cc = await this.prisma.campaignContact.update({
+    await this.prisma.campaignContact.update({
       where: { id: campaignContactId },
-      data: {
-        status: CampaignContactStatus.FAILED,
-        failReason: reason,
-      },
-      select: { campaignId: true },
+      data: { status: CampaignContactStatus.FAILED, failReason: reason },
     });
-    await this.updateCounts(cc.campaignId);
   }
 
   async markResponded(phone: string, companyId: number) {
@@ -295,16 +271,14 @@ export class CampaignsService {
     });
     if (!cc) return { marked: false };
 
-    const updated = await this.prisma.campaignContact.update({
+    await this.prisma.campaignContact.update({
       where: { id: cc.id },
       data: {
         status: CampaignContactStatus.RESPONDED,
         respondedAt: new Date(),
       },
-      select: { campaignId: true },
     });
 
-    await this.updateCounts(updated.campaignId);
     return { marked: true };
   }
 
@@ -318,12 +292,8 @@ export class CampaignsService {
   }) {
     const { customerId, platformName } = payload;
 
-    // Buscar campaignContact RESPONDED más reciente
     const cc = await this.prisma.campaignContact.findFirst({
-      where: {
-        customerId,
-        status: CampaignContactStatus.RESPONDED,
-      },
+      where: { customerId, status: CampaignContactStatus.RESPONDED },
       orderBy: { respondedAt: 'desc' },
     });
     if (!cc) return;
@@ -336,12 +306,11 @@ export class CampaignsService {
         platformPurchased: platformName,
       },
     });
-    await this.updateCounts(cc.campaignId);
   }
 
   // ─── Helper contadores ────────────────────────────────────────────────────
 
-  private async updateCounts(campaignId: number) {
+  private async getCounts(campaignId: number) {
     const [total, sent, responded, purchased, failed] = await Promise.all([
       this.prisma.campaignContact.count({ where: { campaignId } }),
       this.prisma.campaignContact.count({
@@ -357,17 +326,13 @@ export class CampaignsService {
         where: { campaignId, status: CampaignContactStatus.FAILED },
       }),
     ]);
-
-    await this.prisma.campaign.update({
-      where: { id: campaignId },
-      data: {
-        totalContacts: total,
-        sentCount: sent,
-        respondedCount: responded,
-        purchasedCount: purchased,
-        failedCount: failed,
-      },
-    });
+    return {
+      totalContacts: total,
+      sentCount: sent,
+      respondedCount: responded,
+      purchasedCount: purchased,
+      failedCount: failed,
+    };
   }
 
   async updateStatus(id: number, status: CampaignStatus, companyId: number) {
@@ -422,6 +387,7 @@ export class CampaignsService {
       },
     });
   }
+
   async markSentManual(campaignContactId: number, companyId: number) {
     const cc = await this.prisma.campaignContact.findFirst({
       where: {
@@ -431,20 +397,19 @@ export class CampaignsService {
           in: [CampaignContactStatus.PENDING, CampaignContactStatus.FAILED],
         },
       },
-      select: { id: true, campaignId: true },
+      select: { id: true },
     });
 
     if (!cc) throw new NotFoundException('Contacto no encontrado.');
 
-    const updated = await this.prisma.campaignContact.update({
+    await this.prisma.campaignContact.update({
       where: { id: cc.id },
       data: { status: CampaignContactStatus.SENT, sentAt: new Date() },
-      select: { campaignId: true },
     });
 
-    await this.updateCounts(updated.campaignId);
     return { ok: true };
   }
+
   async markPendingManual(campaignContactId: number, companyId: number) {
     const cc = await this.prisma.campaignContact.findFirst({
       where: {
@@ -452,7 +417,7 @@ export class CampaignsService {
         campaign: { companyId },
         status: CampaignContactStatus.SENT,
       },
-      select: { id: true, campaignId: true },
+      select: { id: true },
     });
 
     if (!cc)
@@ -460,16 +425,11 @@ export class CampaignsService {
         'Contacto no encontrado o no está en estado SENT.',
       );
 
-    const updated = await this.prisma.campaignContact.update({
+    await this.prisma.campaignContact.update({
       where: { id: cc.id },
-      data: {
-        status: CampaignContactStatus.PENDING,
-        sentAt: null,
-      },
-      select: { campaignId: true },
+      data: { status: CampaignContactStatus.PENDING, sentAt: null },
     });
 
-    await this.updateCounts(updated.campaignId);
     return { ok: true };
   }
 }

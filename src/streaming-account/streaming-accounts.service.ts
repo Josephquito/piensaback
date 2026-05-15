@@ -24,9 +24,6 @@ export const ACCOUNT_SELECT = {
   totalCost: true,
   notes: true,
   status: true,
-  replacedByEmail: true,
-  replacedAt: true,
-  replacementNote: true,
   createdAt: true,
   updatedAt: true,
   platform: { select: { id: true, name: true } },
@@ -41,7 +38,7 @@ export const ACCOUNT_SELECT = {
       sales: {
         where: {
           status: { in: ['ACTIVE', 'PAUSED', 'EXPIRED'] as SaleStatus[] },
-        }, // ← agrega EXPIRED
+        },
         select: { cutoffDate: true, status: true },
         orderBy: { createdAt: 'desc' as const },
         take: 1,

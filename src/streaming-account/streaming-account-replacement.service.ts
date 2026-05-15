@@ -18,26 +18,38 @@ export class StreamingAccountReplacementService {
     private readonly accounts: StreamingAccountsService,
   ) {}
 
-  // =========================
-  // CASO 1 — Credenciales nuevas sin costo
-  // =========================
+  // CASO 1
   async replaceCredentials(
     id: number,
     dto: ReplaceCredentialsDto,
     companyId: number,
+    userId: number,
   ) {
     const account = await this.accounts.findAndAssert(id, companyId);
-    const oldEmail = account.email;
 
-    await this.prisma.streamingAccount.update({
-      where: { id: account.id },
-      data: {
-        email: dto.email.trim(),
-        password: dto.password,
-        replacedByEmail: oldEmail,
-        replacedAt: new Date(),
-        replacementNote: dto.note ?? null,
-      },
+    await this.prisma.$transaction(async (tx) => {
+      await tx.accountReplacementHistory.create({
+        data: {
+          companyId,
+          accountId: account.id,
+          replacementType: 'CREDENTIALS',
+          oldEmail: account.email,
+          oldPassword: account.password,
+          oldCost: account.totalCost,
+          oldCutoffDate: account.cutoffDate,
+          oldSupplierId: account.supplierId,
+          replacedByUserId: userId,
+        },
+      });
+
+      await tx.streamingAccount.update({
+        where: { id: account.id },
+        data: {
+          email: dto.email.trim(),
+          password: dto.password,
+          ...(dto.note ? { notes: dto.note } : {}),
+        },
+      });
     });
 
     return this.prisma.streamingAccount.findUnique({
@@ -46,14 +58,13 @@ export class StreamingAccountReplacementService {
     });
   }
 
-  // =========================
-  // CASO 2 — Reemplazo con costo adicional
-  // =========================
+  // CASO 2
   async replacePaid(
     id: number,
     dto: ReplacePaidDto,
     companyId: number,
     today: Date,
+    userId: number,
   ) {
     const account = await this.accounts.findAndAssert(id, companyId);
 
@@ -97,10 +108,23 @@ export class StreamingAccountReplacementService {
       return acc + this.accounts.daysRemainingByDate(sale.cutoffDate, today);
     }, 0);
 
-    const oldEmail = account.email;
-
     await this.prisma.$transaction(async (tx) => {
-      // 1) ADJUST_OUT — días disponibles que se pierden
+      // Guardar historial antes de modificar
+      await tx.accountReplacementHistory.create({
+        data: {
+          companyId,
+          accountId: account.id,
+          replacementType: 'PAID',
+          oldEmail: account.email,
+          oldPassword: account.password,
+          oldCost: account.totalCost,
+          oldCutoffDate: account.cutoffDate,
+          oldSupplierId: account.supplierId,
+          replacedByUserId: userId,
+          note: dto.note ?? null,
+        },
+      });
+
       if (qtyToClose > 0) {
         await this.kardex.registerAdjustOut(
           {
@@ -115,7 +139,6 @@ export class StreamingAccountReplacementService {
         );
       }
 
-      // 2) IN — todos los perfiles × días de la cuenta nueva
       await this.kardex.registerIn(
         {
           companyId,
@@ -128,7 +151,6 @@ export class StreamingAccountReplacementService {
         tx,
       );
 
-      // 3) OUT — consume días de ventas activas que se transfieren
       if (soldDaysToTransfer > 0) {
         await this.kardex.registerOut(
           {
@@ -142,13 +164,11 @@ export class StreamingAccountReplacementService {
         );
       }
 
-      // 4) Balance proveedor
       await tx.supplier.update({
         where: { id: account.supplierId },
         data: { balance: { decrement: newTotalCost } },
       });
 
-      // 5) Actualizar cuenta
       await tx.streamingAccount.update({
         where: { id: account.id },
         data: {
@@ -158,9 +178,6 @@ export class StreamingAccountReplacementService {
           cutoffDate: newCutoffDate,
           durationDays: dto.durationDays,
           totalCost: newTotalCost,
-          replacedByEmail: oldEmail,
-          replacedAt: new Date(),
-          replacementNote: dto.note ?? null,
         },
       });
     });
@@ -171,14 +188,13 @@ export class StreamingAccountReplacementService {
     });
   }
 
-  // =========================
-  // CASO 3 — Reemplazo desde inventario
-  // =========================
+  // CASO 3
   async replaceFromInventory(
     id: number,
     dto: ReplaceFromInventoryDto,
     companyId: number,
     today: Date,
+    userId: number,
   ) {
     const accountA = await this.accounts.findAndAssert(id, companyId);
     const accountB = await this.accounts.findAndAssert(
@@ -196,14 +212,12 @@ export class StreamingAccountReplacementService {
         'Ambas cuentas deben ser de la misma plataforma.',
       );
 
-    // Solo perfiles SOLD de A que tienen venta ACTIVE — estos son los que realmente se migran
     const soldProfilesA = await this.prisma.accountProfile.findMany({
       where: { accountId: accountA.id, status: 'SOLD' },
       select: { id: true, profileNo: true },
       orderBy: { profileNo: 'asc' },
     });
 
-    // Para cada perfil SOLD de A, verificar si tiene venta activa
     const profilesWithActiveSale = await Promise.all(
       soldProfilesA.map(async (profileA) => {
         const activeSale = await this.prisma.streamingSale.findFirst({
@@ -217,7 +231,6 @@ export class StreamingAccountReplacementService {
       }),
     );
 
-    // Solo los que realmente tienen venta activa necesitan un perfil de B
     const toMigrate = profilesWithActiveSale.filter(
       (x) => x.activeSale !== null,
     );
@@ -241,13 +254,28 @@ export class StreamingAccountReplacementService {
       accountB.cutoffDate,
       today,
     );
-
     const availableCountA = await this.prisma.accountProfile.count({
       where: { accountId: accountA.id, status: 'AVAILABLE' },
     });
 
     await this.prisma.$transaction(async (tx) => {
-      // 1) ADJUST_OUT en A — días disponibles que se pierden
+      // Guardar historial antes de modificar
+      await tx.accountReplacementHistory.create({
+        data: {
+          companyId,
+          accountId: accountA.id,
+          replacementType: 'FROM_INVENTORY',
+          oldEmail: accountA.email,
+          oldPassword: accountA.password,
+          oldCost: accountA.totalCost,
+          oldCutoffDate: accountA.cutoffDate,
+          oldSupplierId: accountA.supplierId,
+          replacementAccountId: accountB.id,
+          replacedByUserId: userId,
+          note: dto.note ?? null,
+        },
+      });
+
       const qtyCloseA = availableCountA * daysLeftA;
       if (qtyCloseA > 0) {
         await this.kardex.registerAdjustOut(
@@ -263,8 +291,6 @@ export class StreamingAccountReplacementService {
         );
       }
 
-      // 2) ADJUST_OUT en B — solo los perfiles que realmente absorben ventas activas
-      // Los perfiles de B que no absorben venta quedan AVAILABLE, no se ajustan
       const qtyCloseB = toMigrate.length * daysLeftB;
       if (qtyCloseB > 0) {
         await this.kardex.registerAdjustOut(
@@ -280,12 +306,10 @@ export class StreamingAccountReplacementService {
         );
       }
 
-      // 3) Migrar ventas activas de A → B
       for (let i = 0; i < soldProfilesA.length; i++) {
         const { profileA, activeSale } = profilesWithActiveSale[i];
 
         if (activeSale) {
-          // Tiene venta activa — asignar un perfil de B y migrar la venta
           const profileB =
             availableProfilesB[
               toMigrate.findIndex((x) => x.profileA.id === profileA.id)
@@ -298,33 +322,21 @@ export class StreamingAccountReplacementService {
 
           await tx.streamingSale.update({
             where: { id: activeSale.id },
-            data: {
-              profileId: profileB.id,
-              accountId: accountB.id,
-            },
+            data: { profileId: profileB.id, accountId: accountB.id },
           });
         }
-        // Si no tiene venta activa, no se asigna perfil de B — se deja como está
 
-        // Perfil de A vuelve a AVAILABLE (luego se bloqueará con el resto)
         await tx.accountProfile.update({
           where: { id: profileA.id },
           data: { status: 'AVAILABLE' },
         });
       }
 
-      // 4) Inactivar cuenta A
       await tx.streamingAccount.update({
         where: { id: accountA.id },
-        data: {
-          status: 'INACTIVE',
-          replacedByEmail: accountB.email,
-          replacedAt: new Date(),
-          replacementNote: dto.note ?? null,
-        },
+        data: { status: 'INACTIVE' },
       });
 
-      // 5) Bloquear todos los perfiles AVAILABLE de A
       await tx.accountProfile.updateMany({
         where: { accountId: accountA.id, status: 'AVAILABLE' },
         data: { status: 'BLOCKED' },

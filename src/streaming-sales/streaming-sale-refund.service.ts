@@ -33,9 +33,10 @@ export class StreamingSaleRefundService {
     });
     if (!customer) throw new BadRequestException('Cliente no encontrado.');
 
-    const rawBalance = (customer.balance ?? '0').replace(',', '.');
-    const currentBalance = new Prisma.Decimal(rawBalance);
-    const newBalance = currentBalance.add(sale.creditAmount).toFixed(2);
+    const currentBalance = customer.balance ?? new Prisma.Decimal(0);
+    const newBalance = new Prisma.Decimal(currentBalance)
+      .add(sale.creditAmount)
+      .toFixed(2);
 
     return this.prisma.$transaction(async (tx) => {
       // ← verificar estado de la cuenta
@@ -67,7 +68,7 @@ export class StreamingSaleRefundService {
 
       await tx.customer.update({
         where: { id: sale.customerId },
-        data: { balance: newBalance },
+        data: { balance: new Prisma.Decimal(newBalance) },
       });
 
       return updatedSale;

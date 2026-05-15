@@ -1,4 +1,6 @@
-import { IsString, IsNotEmpty, IsOptional } from 'class-validator';
+// create-campaign.dto.ts
+import { IsString, IsNotEmpty, IsOptional, IsEnum } from 'class-validator';
+import { CampaignSegment } from '@prisma/client';
 
 export class CreateCampaignDto {
   @IsString()
@@ -13,7 +15,7 @@ export class CreateCampaignDto {
   @IsOptional()
   imageUrl?: string;
 
-  @IsString()
+  @IsEnum(CampaignSegment)
   @IsOptional()
-  segment?: string;
+  segment?: CampaignSegment;
 }

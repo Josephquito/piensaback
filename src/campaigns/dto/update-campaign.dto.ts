@@ -1,4 +1,6 @@
-import { IsString, IsOptional } from 'class-validator';
+// update-campaign.dto.ts
+import { IsString, IsOptional, IsEnum } from 'class-validator';
+import { CampaignSegment } from '@prisma/client';
 
 export class UpdateCampaignDto {
   @IsString()
@@ -13,7 +15,7 @@ export class UpdateCampaignDto {
   @IsOptional()
   imageUrl?: string;
 
-  @IsString()
+  @IsEnum(CampaignSegment)
   @IsOptional()
-  segment?: string;
+  segment?: CampaignSegment;
 }

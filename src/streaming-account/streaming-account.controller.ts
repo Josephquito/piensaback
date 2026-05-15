@@ -154,7 +154,12 @@ export class StreamingAccountsController {
     @Body() dto: ReplaceCredentialsDto,
     @Req() req: RequestWithUser,
   ) {
-    return this.replacementService.replaceCredentials(id, dto, req.companyId!);
+    return this.replacementService.replaceCredentials(
+      id,
+      dto,
+      req.companyId!,
+      req.user.id,
+    );
   }
 
   @Post(':id/replace/paid')
@@ -165,7 +170,13 @@ export class StreamingAccountsController {
     @Req() req: RequestWithUser,
     @UserToday() today: Date,
   ) {
-    return this.replacementService.replacePaid(id, dto, req.companyId!, today);
+    return this.replacementService.replacePaid(
+      id,
+      dto,
+      req.companyId!,
+      today,
+      req.user.id,
+    );
   }
 
   @Post(':id/replace/inventory')
@@ -181,6 +192,7 @@ export class StreamingAccountsController {
       dto,
       req.companyId!,
       today,
+      req.user.id,
     );
   }
 
